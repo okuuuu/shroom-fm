@@ -12,6 +12,7 @@ ESTONIAN_GRID_CRS = "EPSG:3301"
 WGS84_CRS = "EPSG:4326"
 ERALDIS_TYPENAME = "metsaregister:eraldis"
 PAGE_SIZE = 1000
+WGS84_URN = f"urn:ogc:def:crs:{WGS84_CRS.replace(':', '::')}"
 
 
 def compute_bbox(
@@ -44,7 +45,7 @@ def fetch_eraldis_bbox(
     while True:
         response = wfs.getfeature(
             typename=ERALDIS_TYPENAME,
-            bbox=bbox,
+            bbox=(*bbox, WGS84_URN),
             srsname=WGS84_CRS,
             outputFormat="application/json",
             startindex=start_index,

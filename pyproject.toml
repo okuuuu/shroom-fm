@@ -7,6 +7,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "geopandas>=1.1.4",
     "owslib>=0.36.0",
 ]
 

@@ -1,8 +1,10 @@
 import math
 
+import geopandas as gpd
 import pytest
+from shapely.geometry import Point
 
-from shroom_fm.eraldis import compute_bbox
+from shroom_fm.eraldis import compute_bbox, filter_within_radius
 
 
 def test_compute_bbox_returns_padded_box_around_point():
@@ -23,3 +25,26 @@ def test_compute_bbox_returns_padded_box_around_point():
     unpadded_delta_lat = radius_km / 111.32
     assert (maxy - lat) > unpadded_delta_lat
     assert (lat - miny) > unpadded_delta_lat
+
+
+def test_filter_within_radius_keeps_only_points_inside_cutoff():
+    home_lat, home_lon = 59.4370, 24.7536
+
+    home_point_3301 = (
+        gpd.GeoSeries([Point(home_lon, home_lat)], crs="EPSG:4326")
+        .to_crs("EPSG:3301")
+        .iloc[0]
+    )
+
+    near_point = Point(home_point_3301.x + 10_000, home_point_3301.y)  # 10km away
+    far_point = Point(home_point_3301.x + 200_000, home_point_3301.y)  # 200km away
+
+    gdf = gpd.GeoDataFrame(
+        {"name": ["near", "far"]},
+        geometry=[near_point, far_point],
+        crs="EPSG:3301",
+    )
+
+    result = filter_within_radius(gdf, home_lat, home_lon, radius_km=80.0)
+
+    assert list(result["name"]) == ["near"]

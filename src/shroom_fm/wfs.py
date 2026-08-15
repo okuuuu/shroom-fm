@@ -1,6 +1,14 @@
 import json
 from pathlib import Path
 
+from owslib.wfs import WebFeatureService
+
+METSAREGISTER_OWS_URL = "https://gsavalik.envir.ee/geoserver/metsaregister/ows"
+
+
+def fetch_capabilities(url: str = METSAREGISTER_OWS_URL) -> WebFeatureService:
+    return WebFeatureService(url, version="2.0.0")
+
 
 def layer_summary(wfs) -> list[dict]:
     layers = [

@@ -1,4 +1,6 @@
-from shroom_fm.wfs import layer_summary
+import json
+
+from shroom_fm.wfs import layer_summary, save_layers_json
 
 
 class _FakeMeta:
@@ -36,3 +38,13 @@ def test_layer_summary_extracts_fields_and_sorts_by_name():
             "abstract": "Tree composition",
         },
     ]
+
+
+def test_save_layers_json_writes_file_and_creates_parent_dirs(tmp_path):
+    layers = [{"name": "a", "title": "A", "abstract": None}]
+    target = tmp_path / "nested" / "wfs_capabilities.json"
+
+    save_layers_json(layers, target)
+
+    assert target.exists()
+    assert json.loads(target.read_text()) == layers

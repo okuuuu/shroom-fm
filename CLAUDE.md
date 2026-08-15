@@ -79,14 +79,15 @@ habitat scoring pipeline is validated.
   computing anything.
 - Key layers: `metsaregister:eraldis` (stand geometry/metadata), `metsaregister:eraldis_element`
   (tree species composition, joins to `eraldis` via `eraldis.id = eraldis_element.eraldis_id`),
-  plus classifier lookup layers for `kasvukohatüüp` and `puuliik`.
+  plus classifier lookup layers `metsaregister:kl_kasvukoht` (kasvukohatüüp) and
+  `metsaregister:kl_puuliik` (puuliik).
 - Do **not** use the `AKS` WFS shown alongside it in Keskkonnaagentuur's service listing —
   that's the address/place-name registry (`Aadressandmete ja kohanimede süsteem`), unrelated
   to forest data.
 - Data is published as open data under CC-BY 4.0.
-- First step when touching this integration: run `GetCapabilities` against the endpoint to
-  confirm current real layer names before hardcoding them — they haven't been verified from
-  a live response yet.
+- Real layer names have been confirmed via a live `GetCapabilities` call (23 layers as of
+  2026-08-15, recorded in `data/wfs_capabilities.json`) — the names above are verified, not
+  assumed. Re-run `scripts/get_capabilities.py` and diff the output if the service changes.
 - EELIS (Keskkonnaagentuur) also exposes public WMS/WFS and may be a useful supplementary
   source later (e.g. protected areas, hydrology) but is not part of the core pipeline.
 

@@ -61,6 +61,13 @@ Runner: `load_home_location()` → `fetch_capabilities()` (reused from `wfs.py`)
 `data/eraldis.geojson` via `GeoDataFrame.to_file(path, driver="GeoJSON")`. Prints a count
 summary, e.g. `"N stands within 80km of home"`.
 
+**Privacy:** unlike `data/wfs_capabilities.json` (the national layer catalog, no personal
+data), `data/eraldis.geojson` is centered on a location within 80 km of home — geographic
+data correlated with home location, the same category of information `config.toml` is
+gitignored to protect. `data/eraldis.geojson` is therefore also gitignored (specific
+entry, not the whole `data/` directory — `wfs_capabilities.json` stays committed). Later
+pipeline steps still read it from local disk; it's just not in git history.
+
 ## Data flow
 
 ```

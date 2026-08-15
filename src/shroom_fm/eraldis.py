@@ -1,12 +1,17 @@
+import io
 import math
 
 import geopandas as gpd
+import pandas as pd
+from owslib.wfs import WebFeatureService
 from shapely.geometry import Point
 
 KM_PER_DEGREE_LAT = 111.32
 BBOX_PADDING_FACTOR = 1.1
 ESTONIAN_GRID_CRS = "EPSG:3301"
 WGS84_CRS = "EPSG:4326"
+ERALDIS_TYPENAME = "metsaregister:eraldis"
+PAGE_SIZE = 1000
 
 
 def compute_bbox(
@@ -29,3 +34,25 @@ def filter_within_radius(
     )
     distances_km = projected.geometry.distance(home_point) / 1000.0
     return gdf[distances_km <= radius_km]
+
+
+def fetch_eraldis_bbox(
+    wfs: WebFeatureService, bbox: tuple[float, float, float, float]
+) -> gpd.GeoDataFrame:
+    pages = []
+    start_index = 0
+    while True:
+        response = wfs.getfeature(
+            typename=ERALDIS_TYPENAME,
+            bbox=bbox,
+            srsname=WGS84_CRS,
+            outputFormat="application/json",
+            startindex=start_index,
+            maxfeatures=PAGE_SIZE,
+        )
+        page = gpd.read_file(io.BytesIO(response.read()))
+        pages.append(page)
+        if len(page) < PAGE_SIZE:
+            break
+        start_index += PAGE_SIZE
+    return gpd.GeoDataFrame(pd.concat(pages, ignore_index=True), crs=pages[0].crs)

@@ -1,0 +1,117 @@
+[
+  {
+    "name": "metsaregister:eraldis",
+    "title": "Metsaregistri eraldised",
+    "abstract": "Metsaregistri kehtiva staatusega eraldised. Eraldise omandivorm on määratud klassifikaatoriga omandivorm_kood veerus (vastavad väärtused metsaregister:kl_omandivorm). Eraldise avaldatud puistunäitajad saab pärida metsaregister:eraldis_element tabelist kasutades seost eraldis.id = eraldis_element.eraldis_id. Andmed @ CC BY 4.0: Metsaregister"
+  },
+  {
+    "name": "metsaregister:eraldis_element",
+    "title": "Metsaregistri eraldiste puistu koosseis",
+    "abstract": "Metsaregistris kehtivate eraldiste puistu koosseis.  Andmetes on välja toodud kõik rinded (klassifikaator rinne_kood) puuliigid (klassifikaator puuliik_kood, väärtused metsaregister:kl_puuliik)."
+  },
+  {
+    "name": "metsaregister:isearasused",
+    "title": "Iseärasused",
+    "abstract": "Metsaregistris kehtivate eraldiste iseärasuste tabel. Sidumine eraldise tabeliga  (metsaregister:eraldis) toimub kasutades seost eraldis.id=isearasus.eraldis_id"
+  },
+  {
+    "name": "metsaregister:kahjustused",
+    "title": "Kahjustused",
+    "abstract": "Metsaregistris kehtivate eraldiste kahjustuste tabel. Sidumine eraldise tabeliga  (metsaregister:eraldis) toimub kasutades seost eraldis.id=kahjustus.eraldis_id"
+  },
+  {
+    "name": "metsaregister:katsealad",
+    "title": "Katsealad",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:kl_kasvukoht",
+    "title": "Klassifikaator: Metsa kasvukohatüübid",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:kl_omandivorm",
+    "title": "Klassifikaator: Omandivorm",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:kl_puuliik",
+    "title": "Klassifikaator: Puuliigid",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:kl_rinne",
+    "title": "Klassifikaator: Puistu rinded",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:kuusekooreyrask_mke",
+    "title": "Metsakaitseekspertiisid kuuse-kooreüraski kahjustusega aladel",
+    "abstract": "Raiesoovitusega metsakaitseekspertiisid aladel, kus kuuse-kooreürask on peamine kahjustaja."
+  },
+  {
+    "name": "metsaregister:mke",
+    "title": "Raie soovitusega metsakaitseekspertiisid",
+    "abstract": "Metsaregistri raie soovitusega metsakaitseekspertiisi aktid. Andmed @ CC BY 4.0: Metsaregister."
+  },
+  {
+    "name": "metsaregister:mke_arhiiv",
+    "title": "Arhiveeritud  metsakaitseekspertiisi (MKE) alad",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:mr__teema_raie_diameeter",
+    "title": "mr__teema_raie_diameeter",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:mr__teema_raie_liik",
+    "title": "mr__teema_raie_liik",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:mr__teema_raie_taius",
+    "title": "mr__teema_raie_taius",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:mr__teema_raie_vanus",
+    "title": "mr__teema_raie_vanus",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:mue",
+    "title": "Metsa uuendamise ekspertiisid MUE",
+    "abstract": "Metsa uuendamise ekspertiisid MUE"
+  },
+  {
+    "name": "metsaregister:natura_2000_alad",
+    "title": "Natura 2000 alad",
+    "abstract": "Koondkiht Natura 2000 loodusalade ja Natura 2000 linnualade territooriumidest (tuletis Metsaregistri jaoks). Vabariigi Valitsuse 5. augusti 2004. a korraldusega nr 615-k \"Euroopa Komisjonile esitatav Natura 2000 võrgustiku alade nimekiri\" kinnitatud alad.\r\nAndmed @ CC BY 4.0: EELIS (Eesti looduse infosüsteem), Keskkonnaagentuur"
+  },
+  {
+    "name": "metsaregister:pesitsusrahu_maatriks",
+    "title": "Pesitsusrahu maatriks",
+    "abstract": "Pesitsusrahu maatriksi kaardikihi koostamise aluseks on Keskkonnaameti haudelindude asustustiheduse maatriks https://keskkonnaamet.ee/elusloodus-looduskaitse/pesitsusrahu. Kaardikiht tugineb 29.03.2026 metsaregistrisse kantud viimastele inventeerimisandmetele. Kaitsealad, püsielupaigad ja hoiualad on kõik loetud maatriksi punasesse kategooriasse."
+  },
+  {
+    "name": "metsaregister:raadatud_metsateatised",
+    "title": "Raadatud_metsateatised",
+    "abstract": null
+  },
+  {
+    "name": "metsaregister:teatis",
+    "title": "Kehtivad metsateatised",
+    "abstract": "Metsaregistri kehtivad metsateatised. Andmed @ CC BY 4.0: Metsaregister"
+  },
+  {
+    "name": "metsaregister:teatis_arhiiv",
+    "title": "Arhiveeritud avalikud metsateatise andmed",
+    "abstract": "Avalikud metsateatiste arhiivi andmed"
+  },
+  {
+    "name": "metsaregister:yp_kaitsemets",
+    "title": "ÜP Kaitsemetsad",
+    "abstract": "Üldplaneeriguga kehtestatud kaitsmetsad"
+  }
+]

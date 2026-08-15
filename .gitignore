@@ -219,3 +219,6 @@ __marimo__/
 
 # superpowers subagent-driven-development scratch state
 .superpowers/
+
+# shroom-fm local config (personal home coordinates)
+config.toml

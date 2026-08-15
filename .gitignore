@@ -222,3 +222,6 @@ __marimo__/
 
 # shroom-fm local config (personal home coordinates)
 config.toml
+
+# shroom-fm local output (geographically correlated with home location)
+data/eraldis.geojson

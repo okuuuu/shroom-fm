@@ -61,11 +61,14 @@ def score_ecotones(adjacency_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFram
     for _, row in projected_adjacency.iterrows():
         composition_a = composition_by_id.get(row["id_a"], [])
         composition_b = composition_by_id.get(row["id_b"], [])
-        fractions_a = composition_fractions(composition_a)
-        fractions_b = composition_fractions(composition_b)
+        fractions_a = composition_fractions(composition_a) if composition_a else None
+        fractions_b = composition_fractions(composition_b) if composition_b else None
 
-        dominant_a, share_a = dominant_species(fractions_a)
-        dominant_b, share_b = dominant_species(fractions_b)
+        dominant_a, share_a = dominant_species(fractions_a) if fractions_a else (None, None)
+        dominant_b, share_b = dominant_species(fractions_b) if fractions_b else (None, None)
+        diversity_a_value = composition_diversity(fractions_a) if fractions_a else None
+        diversity_b_value = composition_diversity(fractions_b) if fractions_b else None
+        contrast = composition_contrast(fractions_a, fractions_b) if fractions_a and fractions_b else float("nan")
 
         records.append(
             {
@@ -73,13 +76,13 @@ def score_ecotones(adjacency_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFram
                 "id_b": row["id_b"],
                 "adjacency_type": row["adjacency_type"],
                 "transition_length_m": row["transition_length_m"],
-                "composition_contrast": composition_contrast(fractions_a, fractions_b),
+                "composition_contrast": contrast,
                 "dominant_species_a": dominant_a,
                 "dominant_share_a": share_a,
-                "diversity_a": composition_diversity(fractions_a),
+                "diversity_a": diversity_a_value,
                 "dominant_species_b": dominant_b,
                 "dominant_share_b": share_b,
-                "diversity_b": composition_diversity(fractions_b),
+                "diversity_b": diversity_b_value,
                 "geometry": row["geometry"].buffer(BUFFER_DISTANCE_M),
             }
         )

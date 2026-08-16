@@ -8,6 +8,9 @@ def test_summarize_composition_groups_rows_by_eraldis_id():
         [
             {
                 "eraldis_id": 100,
+                "id": "eraldis_element.0",
+                "sys_id": 156307113,
+                "versioon": 1762787104405.0,
                 "rinne_kood": "1",
                 "puuliik_kood": "MA",
                 "osakaal": 80,
@@ -23,6 +26,9 @@ def test_summarize_composition_groups_rows_by_eraldis_id():
             },
             {
                 "eraldis_id": 100,
+                "id": "eraldis_element.1",
+                "sys_id": 156307114,
+                "versioon": 1762787104406.0,
                 "rinne_kood": "1",
                 "puuliik_kood": "KU",
                 "osakaal": 20,
@@ -38,6 +44,9 @@ def test_summarize_composition_groups_rows_by_eraldis_id():
             },
             {
                 "eraldis_id": 200,
+                "id": "eraldis_element.2",
+                "sys_id": 156307115,
+                "versioon": 1762787104407.0,
                 "rinne_kood": "1",
                 "puuliik_kood": "KS",
                 "osakaal": 100,
@@ -62,3 +71,8 @@ def test_summarize_composition_groups_rows_by_eraldis_id():
     assert result[100][0]["osakaal"] == 80
     assert len(result[200]) == 1
     assert result[200][0]["puuliik_kood"] == "KS"
+
+    # Verify bookkeeping columns are excluded from output
+    assert "id" not in result[100][0]
+    assert "sys_id" not in result[100][0]
+    assert "versioon" not in result[100][0]

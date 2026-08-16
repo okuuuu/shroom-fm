@@ -15,8 +15,9 @@ scouting — instead of manually clicking around the Metsaregister web map.
 `enrich.py` (joins tree composition from `eraldis_element` and resolves `kasvukoht`/`puuliik`
 classifier labels), `adjacency.py` (computes which stands are meaningfully adjacent —
 `touching` or `near_gap`), and `ecotone.py` (scores every adjacent pair by species
-composition contrast — continuous, unfiltered — and buffers the boundary into a scoutable
-microtype polygon); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
+composition contrast, kasvukoht site-type/moisture contrast, development-class age
+contrast, and drainage change — all continuous/unfiltered — and buffers the boundary into a
+scoutable microtype polygon); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
 `scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, and `scripts/score_ecotones.py`
 are runnable. Step 7+ (`HabitatScore`, exporting top N) is not yet built. This file documents
 the target architecture so implementation stays consistent; update it as more of the

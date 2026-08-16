@@ -1,3 +1,5 @@
+import math
+
 from shroom_fm.enrich import TARGET_SPECIES_CODES
 
 
@@ -22,3 +24,7 @@ def composition_contrast(fractions_a: dict[str, float], fractions_b: dict[str, f
 
 def dominant_species(fractions: dict[str, float]) -> tuple[str, float]:
     return max(fractions.items(), key=lambda item: item[1])
+
+
+def composition_diversity(fractions: dict[str, float]) -> float:
+    return -sum(p * math.log(p) for p in fractions.values() if p > 0)

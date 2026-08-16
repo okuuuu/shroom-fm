@@ -1,6 +1,11 @@
 import pytest
 
-from shroom_fm.ecotone import composition_contrast, composition_fractions, dominant_species
+from shroom_fm.ecotone import (
+    composition_contrast,
+    composition_diversity,
+    composition_fractions,
+    dominant_species,
+)
 
 
 def test_composition_fractions_normalizes_single_species_stand():
@@ -90,3 +95,22 @@ def test_dominant_species_can_return_other_for_mixed_non_target_stand():
 
     assert name == "other"
     assert share == pytest.approx(0.6)
+
+
+def test_composition_diversity_is_zero_for_monoculture():
+    fractions = {"pine": 1.0, "spruce": 0.0, "birch": 0.0, "aspen": 0.0, "other": 0.0}
+
+    assert composition_diversity(fractions) == pytest.approx(0.0)
+
+
+def test_composition_diversity_matches_known_value_for_real_stand():
+    fractions = {"pine": 0.0, "spruce": 0.95, "birch": 0.05, "aspen": 0.0, "other": 0.0}
+
+    assert composition_diversity(fractions) == pytest.approx(0.1985152433458726)
+
+
+def test_composition_diversity_is_higher_for_more_evenly_mixed_stand():
+    monoculture = {"pine": 1.0, "spruce": 0.0, "birch": 0.0, "aspen": 0.0, "other": 0.0}
+    evenly_mixed = {"pine": 0.25, "spruce": 0.25, "birch": 0.25, "aspen": 0.25, "other": 0.0}
+
+    assert composition_diversity(evenly_mixed) > composition_diversity(monoculture)

@@ -1,6 +1,10 @@
 import json
 
+import pandas as pd
+import requests
 from owslib.wfs import WebFeatureService
+
+from shroom_fm.wfs import METSAREGISTER_OWS_URL
 
 COMPOSITION_DETAIL_COLUMNS = [
     "rinne_kood",
@@ -23,6 +27,9 @@ TARGET_SPECIES_CODES = {
     "birch": "KS",
     "aspen": "HB",
 }
+
+ERALDIS_ELEMENT_TYPENAME = "metsaregister:eraldis_element"
+ID_BATCH_SIZE = 500
 
 
 def summarize_composition(element_df) -> dict[int, list[dict]]:
@@ -48,3 +55,24 @@ def fetch_classifier(wfs: WebFeatureService, typename: str) -> dict[str, str]:
         feature["properties"]["kood"]: feature["properties"]["kirjeldus"]
         for feature in data["features"]
     }
+
+
+def fetch_eraldis_element(eraldis_ids: list[int]) -> pd.DataFrame:
+    rows = []
+    for i in range(0, len(eraldis_ids), ID_BATCH_SIZE):
+        batch = eraldis_ids[i : i + ID_BATCH_SIZE]
+        id_list = ",".join(str(eid) for eid in batch)
+        response = requests.get(
+            METSAREGISTER_OWS_URL,
+            params={
+                "service": "WFS",
+                "version": "2.0.0",
+                "request": "GetFeature",
+                "typeName": ERALDIS_ELEMENT_TYPENAME,
+                "outputFormat": "application/json",
+                "CQL_FILTER": f"eraldis_id IN ({id_list})",
+            },
+        )
+        data = response.json()
+        rows.extend(feature["properties"] for feature in data["features"])
+    return pd.DataFrame(rows)

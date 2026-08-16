@@ -1,5 +1,6 @@
 import json
 
+import geopandas as gpd
 import pandas as pd
 import requests
 from owslib.wfs import WebFeatureService
@@ -30,6 +31,8 @@ TARGET_SPECIES_CODES = {
 
 ERALDIS_ELEMENT_TYPENAME = "metsaregister:eraldis_element"
 ID_BATCH_SIZE = 500
+PUULIIK_TYPENAME = "metsaregister:kl_puuliik"
+KASVUKOHT_TYPENAME = "metsaregister:kl_kasvukoht"
 
 
 def summarize_composition(element_df) -> dict[int, list[dict]]:
@@ -76,3 +79,29 @@ def fetch_eraldis_element(eraldis_ids: list[int]) -> pd.DataFrame:
         data = response.json()
         rows.extend(feature["properties"] for feature in data["features"])
     return pd.DataFrame(rows)
+
+
+def enrich_eraldis(gdf: gpd.GeoDataFrame, wfs: WebFeatureService) -> gpd.GeoDataFrame:
+    crs = gdf.crs
+    eraldis_ids = gdf["id"].tolist()
+
+    element_df = fetch_eraldis_element(eraldis_ids)
+    composition_by_id = summarize_composition(element_df)
+
+    result = gdf.copy()
+    result["composition"] = result["id"].map(composition_by_id)
+    result["composition"] = result["composition"].apply(
+        lambda value: value if isinstance(value, list) else []
+    )
+
+    shares = result["composition"].apply(compute_species_shares)
+    shares_df = pd.DataFrame(shares.tolist(), index=result.index)
+    for column in shares_df.columns:
+        result[column] = shares_df[column]
+
+    puuliik_labels = fetch_classifier(wfs, PUULIIK_TYPENAME)
+    kasvukoht_labels = fetch_classifier(wfs, KASVUKOHT_TYPENAME)
+    result["peapuuliik_kirjeldus"] = result["peapuuliik_kood"].map(puuliik_labels)
+    result["kasvukoht_kirjeldus"] = result["kasvukoht_kood"].map(kasvukoht_labels)
+
+    return gpd.GeoDataFrame(result, geometry="geometry", crs=crs)

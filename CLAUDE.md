@@ -10,9 +10,12 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: pre-implementation.** The repository currently contains only `LICENSE` and
-`.gitignore` — no code has been written yet. This file documents the target architecture
-so implementation stays consistent; update it as real modules, commands, and scripts land.
+**Status: MVP steps 1-2 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+`config.py` (home location loading), and `eraldis.py` (bbox download + radius filtering);
+`scripts/get_capabilities.py` and `scripts/download_eraldis.py` are runnable. Steps 3+
+(joining tree composition, `kasvukohatüüp`, scoring) are not yet built. This file documents
+the target architecture so implementation stays consistent; update it as more of the
+pipeline lands.
 
 ## Planned architecture
 
@@ -90,6 +93,13 @@ habitat scoring pipeline is validated.
   assumed. Re-run `scripts/get_capabilities.py` and diff the output if the service changes.
 - EELIS (Keskkonnaagentuur) also exposes public WMS/WFS and may be a useful supplementary
   source later (e.g. protected areas, hydrology) but is not part of the core pipeline.
+- `metsaregister:eraldis`'s real attribute columns (confirmed via a live `GetFeature` call,
+  2026-08-16) include: `kvartali_nr`, `eraldise_nr` (the `Kvartal`/`Eraldis` identifiers),
+  `peapuuliik_kood` (`Peamine puuliik`), `kasvukoht_kood` (`Kasvukoht`), `arengukl_kood`
+  (`Arenguklass`), plus `pindala` (area), `korgus` (height), `keskm_vanus` (mean age),
+  `omandivorm_kood` (ownership form), and others. `scripts/download_eraldis.py` downloads
+  this layer already joined with these attributes — no separate attribute fetch needed for
+  the fields already present here.
 
 ## Domain glossary (Estonian forestry terms used throughout the data and code)
 

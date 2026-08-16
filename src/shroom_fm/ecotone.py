@@ -8,12 +8,13 @@ from shroom_fm.eraldis import ESTONIAN_GRID_CRS
 
 def composition_fractions(composition: list[dict]) -> dict[str, float]:
     categories = list(TARGET_SPECIES_CODES) + ["other"]
-    total = sum(entry["osakaal"] for entry in composition)
+    valid_entries = [entry for entry in composition if not math.isnan(entry["osakaal"])]
+    total = sum(entry["osakaal"] for entry in valid_entries)
     if total == 0:
         return {category: 0.0 for category in categories}
 
     target_sums = {
-        name: sum(entry["osakaal"] for entry in composition if entry["puuliik_kood"] == code)
+        name: sum(entry["osakaal"] for entry in valid_entries if entry["puuliik_kood"] == code)
         for name, code in TARGET_SPECIES_CODES.items()
     }
     other = total - sum(target_sums.values())

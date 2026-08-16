@@ -52,6 +52,31 @@ def test_composition_fractions_returns_zero_for_empty_composition():
     assert fractions == {"pine": 0.0, "spruce": 0.0, "birch": 0.0, "aspen": 0.0, "other": 0.0}
 
 
+def test_composition_fractions_skips_entries_with_nan_osakaal():
+    composition = [
+        {"puuliik_kood": "MA", "osakaal": 100.0},
+        {
+            "rinne_kood": "A",
+            "puuliik_kood": "PI",
+            "osakaal": float("nan"),
+            "vanus": float("nan"),
+            "korgus": 3.5,
+            "enamus": False,
+            "sunniaasta": float("nan"),
+            "paritolu": float("nan"),
+            "diameeter": float("nan"),
+            "rinnaspindala": float("nan"),
+            "tagavara": float("nan"),
+            "arv": float("nan"),
+        },
+    ]
+
+    fractions = composition_fractions(composition)
+
+    assert fractions == {"pine": 1.0, "spruce": 0.0, "birch": 0.0, "aspen": 0.0, "other": 0.0}
+    assert sum(fractions.values()) == pytest.approx(1.0)
+
+
 def test_composition_contrast_is_zero_for_identical_fractions():
     fractions = {"pine": 0.9, "spruce": 0.1, "birch": 0.0, "aspen": 0.0, "other": 0.0}
 

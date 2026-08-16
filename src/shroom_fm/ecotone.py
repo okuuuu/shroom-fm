@@ -18,3 +18,7 @@ def composition_fractions(composition: list[dict]) -> dict[str, float]:
 
 def composition_contrast(fractions_a: dict[str, float], fractions_b: dict[str, float]) -> float:
     return 0.5 * sum(abs(fractions_a[key] - fractions_b[key]) for key in fractions_a)
+
+
+def dominant_species(fractions: dict[str, float]) -> tuple[str, float]:
+    return max(fractions.items(), key=lambda item: item[1])

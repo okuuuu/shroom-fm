@@ -1,6 +1,6 @@
 import pytest
 
-from shroom_fm.ecotone import composition_contrast, composition_fractions
+from shroom_fm.ecotone import composition_contrast, composition_fractions, dominant_species
 
 
 def test_composition_fractions_normalizes_single_species_stand():
@@ -72,3 +72,21 @@ def test_composition_contrast_reflects_real_mixed_stand_transition():
     fractions_b = {"pine": 0.5, "spruce": 0.5, "birch": 0.0, "aspen": 0.0, "other": 0.0}
 
     assert composition_contrast(fractions_a, fractions_b) == pytest.approx(0.4)
+
+
+def test_dominant_species_returns_highest_share_category():
+    fractions = {"pine": 0.86, "spruce": 0.0, "birch": 0.14, "aspen": 0.0, "other": 0.0}
+
+    name, share = dominant_species(fractions)
+
+    assert name == "pine"
+    assert share == pytest.approx(0.86)
+
+
+def test_dominant_species_can_return_other_for_mixed_non_target_stand():
+    fractions = {"pine": 0.1, "spruce": 0.1, "birch": 0.1, "aspen": 0.1, "other": 0.6}
+
+    name, share = dominant_species(fractions)
+
+    assert name == "other"
+    assert share == pytest.approx(0.6)

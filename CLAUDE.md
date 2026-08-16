@@ -10,15 +10,32 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-5 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+**Status: MVP steps 1-6 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
 `config.py` (home location loading), `eraldis.py` (bbox download + radius filtering),
 `enrich.py` (joins tree composition from `eraldis_element` and resolves `kasvukoht`/`puuliik`
-classifier labels), and `adjacency.py` (computes which stands are meaningfully adjacent —
-`touching` or `near_gap` — as the input to ecotone detection); `scripts/get_capabilities.py`,
-`scripts/download_eraldis.py`, `scripts/enrich_eraldis.py`, and `scripts/compute_adjacency.py`
-are runnable. Steps 6+ (ecotone detection, `HabitatScore`) are not yet built. This file
-documents the target architecture so implementation stays consistent; update it as more of
-the pipeline lands.
+classifier labels), `adjacency.py` (computes which stands are meaningfully adjacent —
+`touching` or `near_gap`), and `ecotone.py` (scores every adjacent pair by species
+composition contrast — continuous, unfiltered — and buffers the boundary into a scoutable
+microtype polygon); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
+`scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, and `scripts/score_ecotones.py`
+are runnable. Step 7+ (`HabitatScore`, exporting top N) is not yet built. This file documents
+the target architecture so implementation stays consistent; update it as more of the
+pipeline lands.
+
+**Known real-data quirks** (found only via live verification against real Metsaregister
+data, not visible from synthetic test fixtures):
+- A composition entry's `osakaal` (share) can be `NaN` for understory/undergrowth layers
+  (`rinne_kood: "A"`) — the registry doesn't measure a stocking share for undergrowth. Around
+  15% of real stands have at least one such entry. Any code summing `osakaal` across a
+  stand's composition must filter out NaN entries first, or the sum (and everything derived
+  from it) becomes NaN. `ecotone.py`'s `composition_fractions` does this; `enrich.py`'s
+  `compute_species_shares` does not yet filter NaN and is a latent risk if a future
+  download/radius happens to include an affected stand with a NaN entry on one of the four
+  target species (not observed in current data, but not structurally prevented either).
+- A small fraction of stands (~0.4% in one real sample) have an entirely empty `composition`
+  list (no matching `eraldis_element` rows at all). Downstream code must treat "no
+  composition data" as `None`/`NaN`, not silently compute a plausible-looking but fabricated
+  value from an empty/all-zero input.
 
 ## Planned architecture
 

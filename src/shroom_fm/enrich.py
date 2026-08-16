@@ -1,3 +1,7 @@
+import json
+
+from owslib.wfs import WebFeatureService
+
 COMPOSITION_DETAIL_COLUMNS = [
     "rinne_kood",
     "puuliik_kood",
@@ -35,3 +39,12 @@ def compute_species_shares(composition: list[dict]) -> dict[str, float]:
             if entry["puuliik_kood"] == code:
                 shares[f"{name}_share"] += entry["osakaal"]
     return shares
+
+
+def fetch_classifier(wfs: WebFeatureService, typename: str) -> dict[str, str]:
+    response = wfs.getfeature(typename=typename, outputFormat="application/json")
+    data = json.loads(response.read())
+    return {
+        feature["properties"]["kood"]: feature["properties"]["kirjeldus"]
+        for feature in data["features"]
+    }

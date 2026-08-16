@@ -225,3 +225,4 @@ config.toml
 
 # shroom-fm local output (geographically correlated with home location)
 data/eraldis.geojson
+data/adjacency.geojson

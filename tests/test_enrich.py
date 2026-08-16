@@ -1,6 +1,6 @@
 import pandas as pd
 
-from shroom_fm.enrich import summarize_composition
+from shroom_fm.enrich import compute_species_shares, summarize_composition
 
 
 def test_summarize_composition_groups_rows_by_eraldis_id():
@@ -76,3 +76,21 @@ def test_summarize_composition_groups_rows_by_eraldis_id():
     assert "id" not in result[100][0]
     assert "sys_id" not in result[100][0]
     assert "versioon" not in result[100][0]
+
+
+def test_compute_species_shares_sums_osakaal_by_target_species():
+    composition = [
+        {"puuliik_kood": "MA", "osakaal": 70},
+        {"puuliik_kood": "MA", "osakaal": 10},
+        {"puuliik_kood": "KU", "osakaal": 15},
+        {"puuliik_kood": "NU", "osakaal": 5},
+    ]
+
+    shares = compute_species_shares(composition)
+
+    assert shares == {
+        "pine_share": 80.0,
+        "spruce_share": 15.0,
+        "birch_share": 0.0,
+        "aspen_share": 0.0,
+    }

@@ -36,6 +36,8 @@ KASVUKOHT_TYPENAME = "metsaregister:kl_kasvukoht"
 
 
 def summarize_composition(element_df) -> dict[int, list[dict]]:
+    if element_df.empty:
+        return {}
     composition_by_id: dict[int, list[dict]] = {}
     for eraldis_id, group in element_df.groupby("eraldis_id"):
         composition_by_id[eraldis_id] = group[COMPOSITION_DETAIL_COLUMNS].to_dict("records")

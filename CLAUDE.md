@@ -10,12 +10,13 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-2 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
-`config.py` (home location loading), and `eraldis.py` (bbox download + radius filtering);
-`scripts/get_capabilities.py` and `scripts/download_eraldis.py` are runnable. Steps 3+
-(joining tree composition, `kasvukohatüüp`, scoring) are not yet built. This file documents
-the target architecture so implementation stays consistent; update it as more of the
-pipeline lands.
+**Status: MVP steps 1-4 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+`config.py` (home location loading), `eraldis.py` (bbox download + radius filtering), and
+`enrich.py` (joins tree composition from `eraldis_element` and resolves `kasvukoht`/`puuliik`
+classifier labels); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`, and
+`scripts/enrich_eraldis.py` are runnable. Steps 5+ (neighbouring-stand calculation, ecotone
+detection, `HabitatScore`) are not yet built. This file documents the target architecture so
+implementation stays consistent; update it as more of the pipeline lands.
 
 ## Planned architecture
 
@@ -100,6 +101,19 @@ habitat scoring pipeline is validated.
   `omandivorm_kood` (ownership form), and others. `scripts/download_eraldis.py` downloads
   this layer already joined with these attributes — no separate attribute fetch needed for
   the fields already present here.
+- `metsaregister:eraldis_element` (confirmed live, 2026-08-16) has **no geometry** — it can't
+  be bbox-filtered, only filtered by `eraldis_id` (GeoServer's `CQL_FILTER=eraldis_id IN
+  (...)` vendor extension works; `owslib.getfeature()` has no CQL support, so this fetch uses
+  `requests` directly). Real columns: `eraldis_id`, `rinne_kood` (canopy layer), `puuliik_kood`
+  (species), `osakaal` (share), `vanus`, `korgus`, `enamus`, `sunniaasta`, `paritolu`,
+  `diameeter`, `rinnaspindala`, `tagavara`, `arv` — multiple rows per stand.
+- `kl_puuliik`/`kl_kasvukoht` classifiers are small, non-spatial, `{kood, kirjeldus}` shape
+  (confirmed live: `kl_puuliik` has 30 rows, e.g. `MA`→`mänd` (pine), `KU`→`kuusk` (spruce),
+  `KS`→`kask` (birch), `HB`→`haab` (aspen)). `scripts/enrich_eraldis.py` resolves both onto
+  `eraldis` as `peapuuliik_kirjeldus`/`kasvukoht_kirjeldus` (real example value seen live:
+  `kasvukoht_kirjeldus = "jänesekapsa-mustika"`), and adds `pine_share`/`spruce_share`/
+  `birch_share`/`aspen_share` columns computed from composition for this project's four
+  target host-tree species.
 
 ## Domain glossary (Estonian forestry terms used throughout the data and code)
 

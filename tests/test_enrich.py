@@ -3,6 +3,14 @@ import pandas as pd
 from shroom_fm.enrich import compute_species_shares, summarize_composition
 
 
+def test_summarize_composition_returns_empty_dict_for_empty_input():
+    element_df = pd.DataFrame()
+
+    result = summarize_composition(element_df)
+
+    assert result == {}
+
+
 def test_summarize_composition_groups_rows_by_eraldis_id():
     element_df = pd.DataFrame(
         [

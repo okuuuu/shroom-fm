@@ -1,6 +1,8 @@
-MAX_GAP_M = 10.0
-MIN_CONTACT_LENGTH_M = 20.0
-MIN_PROXIMITY_LENGTH_M = 20.0
+# Engineering starting points, not biological constants — retune once real
+# field scouting results validate or invalidate them.
+MAX_GAP_M = 10.0  # near_gap: max distance between boundaries to consider
+MIN_CONTACT_LENGTH_M = 20.0  # touching: min shared-boundary length to keep (discards corners)
+MIN_PROXIMITY_LENGTH_M = 20.0  # near_gap: min estimated parallel-run length to keep
 
 
 def classify_pair(geom_a, geom_b) -> dict | None:

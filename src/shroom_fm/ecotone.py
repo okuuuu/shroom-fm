@@ -38,6 +38,17 @@ KASVUKOHT_PROFILES = {
 }
 
 
+AGE_CLASS_RANKS = {
+    "A": 0,
+    "S": 1,
+    "N": 2,
+    "L": 3,
+    "K": 4,
+    "V": 5,
+    "Y": 6,
+}
+
+
 def kasvukoht_profile(kood: str) -> dict | None:
     return KASVUKOHT_PROFILES.get(kood)
 
@@ -67,6 +78,12 @@ def kasvukoht_contrast(kood_a: str, kood_b: str) -> dict:
         "group_changed": group_changed,
         "moisture_contrast": moisture_contrast,
     }
+
+
+def age_contrast(arengukl_a: str, arengukl_b: str) -> float | None:
+    if arengukl_a not in AGE_CLASS_RANKS or arengukl_b not in AGE_CLASS_RANKS:
+        return None
+    return abs(AGE_CLASS_RANKS[arengukl_a] - AGE_CLASS_RANKS[arengukl_b]) / 6
 
 
 def composition_fractions(composition: list[dict]) -> dict[str, float]:

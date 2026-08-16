@@ -1,6 +1,7 @@
 import pytest
 
 from shroom_fm.ecotone import (
+    age_contrast,
     composition_contrast,
     composition_diversity,
     composition_fractions,
@@ -217,3 +218,19 @@ def test_kasvukoht_contrast_identical_codes():
         "group_changed": False,
         "moisture_contrast": 0.0,
     }
+
+
+def test_age_contrast_between_young_and_mature_stand():
+    assert age_contrast("N", "Y") == pytest.approx(0.6666666666666666)
+
+
+def test_age_contrast_between_clearing_and_mature_stand_is_maximal():
+    assert age_contrast("A", "Y") == pytest.approx(1.0)
+
+
+def test_age_contrast_identical_class_is_zero():
+    assert age_contrast("K", "K") == 0.0
+
+
+def test_age_contrast_returns_none_for_unrecognized_class():
+    assert age_contrast("N", "X") is None

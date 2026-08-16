@@ -5,6 +5,7 @@ from shroom_fm.ecotone import (
     composition_diversity,
     composition_fractions,
     dominant_species,
+    kasvukoht_profile,
 )
 
 
@@ -139,3 +140,31 @@ def test_composition_diversity_is_higher_for_more_evenly_mixed_stand():
     evenly_mixed = {"pine": 0.25, "spruce": 0.25, "birch": 0.25, "aspen": 0.25, "other": 0.0}
 
     assert composition_diversity(evenly_mixed) > composition_diversity(monoculture)
+
+
+def test_kasvukoht_profile_returns_known_site_type():
+    profile = kasvukoht_profile("PH")
+
+    assert profile == {"group": "palu", "moisture": 1}
+
+
+def test_kasvukoht_profile_returns_none_for_unmapped_code():
+    assert kasvukoht_profile("KS") is None
+    assert kasvukoht_profile("KP") is None
+    assert kasvukoht_profile("LP") is None
+
+
+def test_kasvukoht_profile_marks_special_hydrology_types():
+    lu = kasvukoht_profile("LU")
+    jo = kasvukoht_profile("JO")
+
+    assert lu == {"group": "loo", "moisture": "special"}
+    assert jo == {"group": "kõdusoo", "moisture": "special"}
+
+
+def test_kasvukoht_profile_marks_puistang_moisture_as_none():
+    mp = kasvukoht_profile("MP")
+    tp = kasvukoht_profile("TP")
+
+    assert mp == {"group": "puistang", "moisture": None}
+    assert tp == {"group": "puistang", "moisture": None}

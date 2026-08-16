@@ -6,6 +6,42 @@ from shroom_fm.enrich import TARGET_SPECIES_CODES
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS
 
 
+KASVUKOHT_PROFILES = {
+    "SM": {"group": "nõmme", "moisture": 0},
+    "KN": {"group": "nõmme", "moisture": 0},
+    "LL": {"group": "loo", "moisture": 0},
+    "KL": {"group": "loo", "moisture": 1},
+    "PH": {"group": "palu", "moisture": 1},
+    "JP": {"group": "palu", "moisture": 1},
+    "MS": {"group": "palu", "moisture": 2},
+    "JM": {"group": "laane", "moisture": 2},
+    "JK": {"group": "laane", "moisture": 2},
+    "SL": {"group": "sürja", "moisture": 2},
+    "ND": {"group": "salu", "moisture": 2},
+    "SN": {"group": "rabastuv", "moisture": 3},
+    "KM": {"group": "rabastuv", "moisture": 3},
+    "KR": {"group": "rabastuv", "moisture": 3},
+    "SJ": {"group": "salu", "moisture": 3},
+    "AN": {"group": "sooviku", "moisture": 3},
+    "TA": {"group": "sooviku", "moisture": 3},
+    "OS": {"group": "sooviku", "moisture": 3},
+    "TR": {"group": "sooviku", "moisture": 3},
+    "LD": {"group": "rohusoo", "moisture": 4},
+    "MD": {"group": "rohusoo", "moisture": 4},
+    "SS": {"group": "samblasoo", "moisture": 4},
+    "RB": {"group": "samblasoo", "moisture": 4},
+    "LU": {"group": "loo", "moisture": "special"},
+    "JO": {"group": "kõdusoo", "moisture": "special"},
+    "MO": {"group": "kõdusoo", "moisture": "special"},
+    "MP": {"group": "puistang", "moisture": None},
+    "TP": {"group": "puistang", "moisture": None},
+}
+
+
+def kasvukoht_profile(kood: str) -> dict | None:
+    return KASVUKOHT_PROFILES.get(kood)
+
+
 def composition_fractions(composition: list[dict]) -> dict[str, float]:
     categories = list(TARGET_SPECIES_CODES) + ["other"]
     valid_entries = [entry for entry in composition if not math.isnan(entry["osakaal"])]

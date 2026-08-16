@@ -42,6 +42,33 @@ def kasvukoht_profile(kood: str) -> dict | None:
     return KASVUKOHT_PROFILES.get(kood)
 
 
+def kasvukoht_contrast(kood_a: str, kood_b: str) -> dict:
+    profile_a = kasvukoht_profile(kood_a)
+    profile_b = kasvukoht_profile(kood_b)
+    site_type_changed = kood_a != kood_b
+
+    if profile_a is None or profile_b is None:
+        return {
+            "site_type_changed": site_type_changed,
+            "group_changed": None,
+            "moisture_contrast": None,
+        }
+
+    group_changed = profile_a["group"] != profile_b["group"]
+    moisture_a = profile_a["moisture"]
+    moisture_b = profile_b["moisture"]
+    if isinstance(moisture_a, (int, float)) and isinstance(moisture_b, (int, float)):
+        moisture_contrast = abs(moisture_a - moisture_b) / 4
+    else:
+        moisture_contrast = None
+
+    return {
+        "site_type_changed": site_type_changed,
+        "group_changed": group_changed,
+        "moisture_contrast": moisture_contrast,
+    }
+
+
 def composition_fractions(composition: list[dict]) -> dict[str, float]:
     categories = list(TARGET_SPECIES_CODES) + ["other"]
     valid_entries = [entry for entry in composition if not math.isnan(entry["osakaal"])]

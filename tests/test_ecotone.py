@@ -5,6 +5,7 @@ from shroom_fm.ecotone import (
     composition_diversity,
     composition_fractions,
     dominant_species,
+    kasvukoht_contrast,
     kasvukoht_profile,
 )
 
@@ -168,3 +169,51 @@ def test_kasvukoht_profile_marks_puistang_moisture_as_none():
 
     assert mp == {"group": "puistang", "moisture": None}
     assert tp == {"group": "puistang", "moisture": None}
+
+
+def test_kasvukoht_contrast_graded_transition_within_same_group():
+    result = kasvukoht_contrast("PH", "MS")
+
+    assert result == {
+        "site_type_changed": True,
+        "group_changed": False,
+        "moisture_contrast": 0.25,
+    }
+
+
+def test_kasvukoht_contrast_strong_transition_across_groups():
+    result = kasvukoht_contrast("PH", "RB")
+
+    assert result == {
+        "site_type_changed": True,
+        "group_changed": True,
+        "moisture_contrast": 0.75,
+    }
+
+
+def test_kasvukoht_contrast_special_hydrology_type_has_no_moisture_contrast():
+    result = kasvukoht_contrast("PH", "LU")
+
+    assert result["site_type_changed"] is True
+    assert result["group_changed"] is True
+    assert result["moisture_contrast"] is None
+
+
+def test_kasvukoht_contrast_unmapped_code_only_has_site_type_changed():
+    result = kasvukoht_contrast("PH", "KS")
+
+    assert result == {
+        "site_type_changed": True,
+        "group_changed": None,
+        "moisture_contrast": None,
+    }
+
+
+def test_kasvukoht_contrast_identical_codes():
+    result = kasvukoht_contrast("PH", "PH")
+
+    assert result == {
+        "site_type_changed": False,
+        "group_changed": False,
+        "moisture_contrast": 0.0,
+    }

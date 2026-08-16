@@ -128,6 +128,11 @@ ECOTONE_COLUMNS = [
     "dominant_species_b",
     "dominant_share_b",
     "diversity_b",
+    "kasvukoht_site_type_changed",
+    "kasvukoht_group_changed",
+    "kasvukoht_moisture_contrast",
+    "age_contrast",
+    "drainage_changed",
     "geometry",
 ]
 
@@ -136,6 +141,9 @@ def score_ecotones(adjacency_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFram
     original_crs = adjacency_gdf.crs
     projected_adjacency = adjacency_gdf.to_crs(ESTONIAN_GRID_CRS)
     composition_by_id = dict(zip(eraldis_gdf["id"], eraldis_gdf["composition"]))
+    kasvukoht_by_id = dict(zip(eraldis_gdf["id"], eraldis_gdf["kasvukoht_kood"]))
+    arengukl_by_id = dict(zip(eraldis_gdf["id"], eraldis_gdf["arengukl_kood"]))
+    drained_by_id = dict(zip(eraldis_gdf["id"], eraldis_gdf["kuivendatud"]))
 
     records = []
     for _, row in projected_adjacency.iterrows():
@@ -150,6 +158,28 @@ def score_ecotones(adjacency_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFram
         diversity_b_value = composition_diversity(fractions_b) if fractions_b else None
         contrast = composition_contrast(fractions_a, fractions_b) if fractions_a and fractions_b else float("nan")
 
+        kasvukoht_a = kasvukoht_by_id.get(row["id_a"])
+        kasvukoht_b = kasvukoht_by_id.get(row["id_b"])
+        kasvukoht_result = (
+            kasvukoht_contrast(kasvukoht_a, kasvukoht_b)
+            if kasvukoht_a is not None and kasvukoht_b is not None
+            else {"site_type_changed": None, "group_changed": None, "moisture_contrast": None}
+        )
+
+        arengukl_a = arengukl_by_id.get(row["id_a"])
+        arengukl_b = arengukl_by_id.get(row["id_b"])
+        age_contrast_value = (
+            age_contrast(arengukl_a, arengukl_b)
+            if arengukl_a is not None and arengukl_b is not None
+            else None
+        )
+
+        drained_a = drained_by_id.get(row["id_a"])
+        drained_b = drained_by_id.get(row["id_b"])
+        drainage_changed_value = (
+            drained_a != drained_b if drained_a is not None and drained_b is not None else None
+        )
+
         records.append(
             {
                 "id_a": row["id_a"],
@@ -163,6 +193,11 @@ def score_ecotones(adjacency_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFram
                 "dominant_species_b": dominant_b,
                 "dominant_share_b": share_b,
                 "diversity_b": diversity_b_value,
+                "kasvukoht_site_type_changed": kasvukoht_result["site_type_changed"],
+                "kasvukoht_group_changed": kasvukoht_result["group_changed"],
+                "kasvukoht_moisture_contrast": kasvukoht_result["moisture_contrast"],
+                "age_contrast": age_contrast_value,
+                "drainage_changed": drainage_changed_value,
                 "geometry": row["geometry"].buffer(BUFFER_DISTANCE_M),
             }
         )

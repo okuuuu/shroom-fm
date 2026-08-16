@@ -14,3 +14,7 @@ def composition_fractions(composition: list[dict]) -> dict[str, float]:
     other = total - sum(target_sums.values())
     raw = {**target_sums, "other": other}
     return {category: raw[category] / total for category in categories}
+
+
+def composition_contrast(fractions_a: dict[str, float], fractions_b: dict[str, float]) -> float:
+    return 0.5 * sum(abs(fractions_a[key] - fractions_b[key]) for key in fractions_a)

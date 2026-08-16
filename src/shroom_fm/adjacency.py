@@ -22,6 +22,8 @@ def classify_pair(geom_a, geom_b) -> dict | None:
     gap = geom_a.distance(geom_b)
     if 0 < gap <= MAX_GAP_M:
         zone = geom_a.buffer(MAX_GAP_M).intersection(geom_b.buffer(MAX_GAP_M))
+        # Rough proximity estimate: overlap-zone area normalized by buffer
+        # width, not an exact measurement of the parallel-run length.
         proximity_length = zone.area / MAX_GAP_M
         if proximity_length >= MIN_PROXIMITY_LENGTH_M:
             return {
@@ -40,8 +42,8 @@ def find_candidate_pairs(gdf: gpd.GeoDataFrame) -> list[tuple[int, int]]:
     joined = gpd.sjoin(buffered, gdf, how="inner", predicate="intersects")
 
     pairs = set()
-    for idx, row in joined.iterrows():
-        id_a = gdf.loc[idx, "id"]
+    for _, row in joined.iterrows():
+        id_a = row["id_left"]
         id_b = row["id_right"]
         if id_a == id_b:
             continue
@@ -67,5 +69,5 @@ def compute_adjacency(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if not records:
         return gpd.GeoDataFrame(columns=ADJACENCY_COLUMNS, geometry="geometry", crs=WGS84_CRS)
 
-    adjacency = gpd.GeoDataFrame(records, crs=ESTONIAN_GRID_CRS)
+    adjacency = gpd.GeoDataFrame(records, columns=ADJACENCY_COLUMNS, crs=ESTONIAN_GRID_CRS)
     return adjacency.to_crs(WGS84_CRS)

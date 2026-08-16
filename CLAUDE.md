@@ -10,13 +10,15 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-4 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
-`config.py` (home location loading), `eraldis.py` (bbox download + radius filtering), and
+**Status: MVP steps 1-5 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+`config.py` (home location loading), `eraldis.py` (bbox download + radius filtering),
 `enrich.py` (joins tree composition from `eraldis_element` and resolves `kasvukoht`/`puuliik`
-classifier labels); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`, and
-`scripts/enrich_eraldis.py` are runnable. Steps 5+ (neighbouring-stand calculation, ecotone
-detection, `HabitatScore`) are not yet built. This file documents the target architecture so
-implementation stays consistent; update it as more of the pipeline lands.
+classifier labels), and `adjacency.py` (computes which stands are meaningfully adjacent —
+`touching` or `near_gap` — as the input to ecotone detection); `scripts/get_capabilities.py`,
+`scripts/download_eraldis.py`, `scripts/enrich_eraldis.py`, and `scripts/compute_adjacency.py`
+are runnable. Steps 6+ (ecotone detection, `HabitatScore`) are not yet built. This file
+documents the target architecture so implementation stays consistent; update it as more of
+the pipeline lands.
 
 ## Planned architecture
 

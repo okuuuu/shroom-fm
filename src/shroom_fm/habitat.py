@@ -96,13 +96,19 @@ def stand_habitat_score(
     return host_score(species, fractions) * site_modifier(site_score)
 
 
+def _stand_fractions(composition: list[dict]) -> dict[str, float] | None:
+    if not composition:
+        return None
+    fractions = composition_fractions(composition)
+    if sum(fractions.values()) == 0:
+        return None
+    return fractions
+
+
 def score_stands(eraldis_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     result = eraldis_gdf.copy()
 
-    fractions_list = [
-        composition_fractions(composition) if composition else None
-        for composition in result["composition"]
-    ]
+    fractions_list = [_stand_fractions(composition) for composition in result["composition"]]
     result["composition_diversity"] = [
         composition_diversity(fractions) if fractions is not None else None
         for fractions in fractions_list

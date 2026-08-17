@@ -5,6 +5,7 @@ import pytest
 from shroom_fm.habitat import (
     HOST_PROFILES,
     TARGET_SPECIES,
+    _stand_fractions,
     base_habitat,
     ecotone_score,
     exploration_bonus,
@@ -120,6 +121,25 @@ def test_stand_habitat_score_poor_site_dampens_but_does_not_zero_strong_host():
 
     assert score == pytest.approx(0.60)
     assert score > 0.0
+
+
+def test_stand_fractions_is_none_for_empty_composition():
+    assert _stand_fractions([]) is None
+
+
+def test_stand_fractions_is_none_for_all_nan_osakaal():
+    composition = [{"puuliik_kood": "MA", "osakaal": float("nan")}]
+
+    assert _stand_fractions(composition) is None
+
+
+def test_stand_fractions_returns_real_fractions_when_data_present():
+    composition = [{"puuliik_kood": "MA", "osakaal": 100.0}]
+
+    fractions = _stand_fractions(composition)
+
+    assert fractions is not None
+    assert fractions["pine"] == pytest.approx(1.0)
 
 
 def test_normalize_bool_or_none_handles_real_bool():

@@ -25,8 +25,16 @@ def compute_bbox(
 
 
 def filter_within_radius(
-    gdf: gpd.GeoDataFrame, lat: float, lon: float, radius_km: float
+    gdf: gpd.GeoDataFrame,
+    lat: float,
+    lon: float,
+    radius_km: float,
+    inner_radius_km: float = 0.0,
 ) -> gpd.GeoDataFrame:
+    if inner_radius_km >= radius_km:
+        raise ValueError(
+            f"inner_radius_km ({inner_radius_km}) must be less than radius_km ({radius_km})"
+        )
     projected = gdf.to_crs(ESTONIAN_GRID_CRS)
     home_point = (
         gpd.GeoSeries([Point(lon, lat)], crs=WGS84_CRS)
@@ -34,7 +42,7 @@ def filter_within_radius(
         .iloc[0]
     )
     distances_km = projected.geometry.distance(home_point) / 1000.0
-    return gdf[distances_km <= radius_km]
+    return gdf[(distances_km >= inner_radius_km) & (distances_km <= radius_km)]
 
 
 def fetch_eraldis_bbox(

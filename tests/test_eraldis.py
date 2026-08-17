@@ -48,3 +48,40 @@ def test_filter_within_radius_keeps_only_points_inside_cutoff():
     result = filter_within_radius(gdf, home_lat, home_lon, radius_km=80.0)
 
     assert list(result["name"]) == ["near"]
+
+
+def test_filter_within_radius_excludes_points_inside_inner_cutoff():
+    home_lat, home_lon = 59.4370, 24.7536
+
+    home_point_3301 = (
+        gpd.GeoSeries([Point(home_lon, home_lat)], crs="EPSG:4326")
+        .to_crs("EPSG:3301")
+        .iloc[0]
+    )
+
+    too_close_point = Point(home_point_3301.x + 2_000, home_point_3301.y)  # 2km away
+    in_ring_point = Point(home_point_3301.x + 10_000, home_point_3301.y)  # 10km away
+    too_far_point = Point(home_point_3301.x + 200_000, home_point_3301.y)  # 200km away
+
+    gdf = gpd.GeoDataFrame(
+        {"name": ["too_close", "in_ring", "too_far"]},
+        geometry=[too_close_point, in_ring_point, too_far_point],
+        crs="EPSG:3301",
+    )
+
+    result = filter_within_radius(
+        gdf, home_lat, home_lon, radius_km=80.0, inner_radius_km=5.0
+    )
+
+    assert list(result["name"]) == ["in_ring"]
+
+
+def test_filter_within_radius_raises_when_inner_radius_not_less_than_outer():
+    with pytest.raises(ValueError):
+        filter_within_radius(
+            gpd.GeoDataFrame({"name": []}, geometry=[], crs="EPSG:3301"),
+            59.4370,
+            24.7536,
+            radius_km=20.0,
+            inner_radius_km=20.0,
+        )

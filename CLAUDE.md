@@ -17,18 +17,25 @@ classifier labels), `adjacency.py` (computes which stands are meaningfully adjac
 `touching` or `near_gap`), `ecotone.py` (scores every adjacent pair by species
 composition contrast, kasvukoht site-type/moisture contrast, development-class age
 contrast, and drainage change — all continuous/unfiltered — and buffers the boundary into a
-scoutable microtype polygon), and `habitat.py` (per-species `StandHabitatScore` for stand
+scoutable microtype polygon), `habitat.py` (per-species `StandHabitatScore` for stand
 interiors and `EcotoneScore` for adjacent-pair boundaries, for the five target species —
 kitsemampel, chanterelle, aspen bolete, birch bolete, porcini — from host tree composition
 and kasvukoht site-type suitability, kept as two distinct scores rather than one combined
-`HabitatScore`); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
+`HabitatScore`), `roads.py` (ETAK road/barrier WFS fetch, `car_class` classification of road
+segments, and barrier-snap exclusion of segments near a permanently-closed barrier), and
+`access.py` (per-eraldis `AccessScore` from nearest-road distances, additive-only onto
+`data/eraldis.geojson`); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
 `scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, `scripts/score_ecotones.py`,
-`scripts/score_habitat.py`, and `scripts/score_ecotone_habitat.py` are runnable (the last
-two must run in that order — ecotone habitat scoring depends on stands already being
-scored). Step 8+ (`ScoutScore` — combining `EcotoneScore` with weather, observation history,
-landscape-mosaic diversity, and access penalty — and exporting top N) is not yet built. This
-file documents the target architecture so implementation stays consistent; update it as more
-of the pipeline lands.
+`scripts/score_habitat.py`, `scripts/score_ecotone_habitat.py` (the last two must run in that
+order — ecotone habitat scoring depends on stands already being scored),
+`scripts/download_roads.py`, and `scripts/score_access.py` are runnable. Of the Access/
+Eligibility layer discussed for step 8+, the road-access piece has now landed as a standalone
+`AccessScore` (see `docs/superpowers/specs/2026-08-17-road-access-design.md`) — it is
+additive-only onto `data/eraldis.geojson` and does not modify `StandHabitatScore`/
+`EcotoneScore`. The rest of step 8+ (`ScoutScore` itself — combining `EcotoneScore` with
+weather, observation history, landscape-mosaic diversity, and `AccessScore` — and exporting
+top N) is not yet built. This file documents the target architecture so implementation stays
+consistent; update it as more of the pipeline lands.
 
 **Known real-data quirks** (found only via live verification against real Metsaregister
 data, not visible from synthetic test fixtures):

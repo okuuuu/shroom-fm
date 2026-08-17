@@ -106,6 +106,23 @@ def test_exclude_barrier_blocked_segments_keeps_segment_near_openable_barrier():
     assert list(result["name"]) == ["near_openable"]
 
 
+def test_exclude_barrier_blocked_segments_keeps_segment_near_unknown_status_barrier():
+    roads_gdf = gpd.GeoDataFrame(
+        {"name": ["near_unknown"]},
+        geometry=[LineString([(0, 0), (10, 0)])],
+        crs="EPSG:3301",
+    )
+    barriers_gdf = gpd.GeoDataFrame(
+        {"toke_tekst": ["Täitmata"]},
+        geometry=[Point(5, 3)],
+        crs="EPSG:3301",
+    )
+
+    result = exclude_barrier_blocked_segments(roads_gdf, barriers_gdf)
+
+    assert list(result["name"]) == ["near_unknown"]
+
+
 def test_exclude_barrier_blocked_segments_keeps_all_when_no_barriers():
     roads_gdf = gpd.GeoDataFrame(
         {"name": ["a"]},

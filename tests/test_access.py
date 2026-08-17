@@ -85,6 +85,23 @@ def test_score_eraldis_access_computes_all_fields():
     assert result["access_reason"] == "100m from Kõrvalmaantee-class road"
 
 
+def test_score_eraldis_access_handles_car_road_present_but_no_walk_path():
+    roads_gdf = gpd.GeoDataFrame(
+        {
+            "car_class": ["NORMAL"],
+            "tyyp_tekst": ["Muu tee"],
+        },
+        geometry=[LineString([(0, 100), (10, 100)])],
+        crs="EPSG:3301",
+    )
+
+    result = score_eraldis_access(Point(0, 0), roads_gdf)
+
+    assert result["nearest_car_road_m"] == pytest.approx(100.0)
+    assert result["nearest_walk_path_m"] is None
+    assert result["nearest_high_confidence_road_m"] is None
+
+
 def test_score_eraldis_access_handles_no_roads_at_all():
     roads_gdf = gpd.GeoDataFrame(
         {"car_class": [], "tyyp_tekst": []}, geometry=[], crs="EPSG:3301"

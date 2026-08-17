@@ -87,6 +87,7 @@ def fetch_layer_bbox(url: str, typename: str, bbox: tuple[float, float, float, f
                 "count": _PAGE_SIZE,
             },
         )
+        response.raise_for_status()
         page = gpd.read_file(io.BytesIO(response.content))
         pages.append(page)
         if len(page) < _PAGE_SIZE:

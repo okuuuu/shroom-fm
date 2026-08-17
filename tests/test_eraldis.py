@@ -4,7 +4,13 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import Point
 
-from shroom_fm.eraldis import compute_bbox, filter_within_radius
+from shroom_fm.eraldis import (
+    _build_cql_filter,
+    _cql_point,
+    compute_bbox,
+    fetch_eraldis_annulus,
+    filter_within_radius,
+)
 
 
 def test_compute_bbox_returns_padded_box_around_point():
@@ -85,3 +91,38 @@ def test_filter_within_radius_raises_when_inner_radius_not_less_than_outer():
             radius_km=20.0,
             inner_radius_km=20.0,
         )
+
+
+def test_cql_point_returns_northing_first_estonian_grid_point():
+    lat, lon = 59.451081455185864, 24.818002100965362
+
+    result = _cql_point(lat, lon)
+
+    assert result == "POINT(6590647.722702539 546398.5907798207)"
+
+
+def test_build_cql_filter_omits_beyond_clause_when_inner_radius_is_zero():
+    lat, lon = 59.451081455185864, 24.818002100965362
+
+    result = _build_cql_filter(lat, lon, radius_km=20.0, inner_radius_km=0.0)
+
+    assert result == (
+        "DWITHIN(shape, POINT(6590647.722702539 546398.5907798207), 20000.0, meters)"
+    )
+    assert "BEYOND" not in result
+
+
+def test_build_cql_filter_includes_beyond_clause_when_inner_radius_is_positive():
+    lat, lon = 59.451081455185864, 24.818002100965362
+
+    result = _build_cql_filter(lat, lon, radius_km=20.0, inner_radius_km=5.0)
+
+    assert result == (
+        "DWITHIN(shape, POINT(6590647.722702539 546398.5907798207), 20000.0, meters) "
+        "AND BEYOND(shape, POINT(6590647.722702539 546398.5907798207), 5000.0, meters)"
+    )
+
+
+def test_fetch_eraldis_annulus_raises_when_inner_radius_not_less_than_outer():
+    with pytest.raises(ValueError):
+        fetch_eraldis_annulus(59.4370, 24.7536, radius_km=20.0, inner_radius_km=20.0)

@@ -1,6 +1,8 @@
 import math
 
-from shroom_fm.ecotone import kasvukoht_profile
+import geopandas as gpd
+
+from shroom_fm.ecotone import composition_diversity, composition_fractions, kasvukoht_profile
 
 TARGET_SPECIES = ["kitsemampel", "chanterelle", "aspen_bolete", "birch_bolete", "porcini"]
 
@@ -92,3 +94,24 @@ def stand_habitat_score(
     if site_score is None:
         return None
     return host_score(species, fractions) * site_modifier(site_score)
+
+
+def score_stands(eraldis_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    result = eraldis_gdf.copy()
+
+    fractions_list = [
+        composition_fractions(composition) if composition else None
+        for composition in result["composition"]
+    ]
+    result["composition_diversity"] = [
+        composition_diversity(fractions) if fractions is not None else None
+        for fractions in fractions_list
+    ]
+
+    for species in TARGET_SPECIES:
+        result[f"stand_habitat_score_{species}"] = [
+            stand_habitat_score(species, fractions, kasvukoht_kood)
+            for fractions, kasvukoht_kood in zip(fractions_list, result["kasvukoht_kood"])
+        ]
+
+    return result

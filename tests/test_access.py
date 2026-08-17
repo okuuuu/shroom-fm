@@ -6,32 +6,8 @@ from shroom_fm.access import (
     ACCESS_DISTANCE_CAP_M,
     access_reason,
     access_score,
-    nearest_segment,
     score_access,
-    score_eraldis_access,
 )
-
-
-def test_nearest_segment_returns_closest_row_and_distance():
-    roads_gdf = gpd.GeoDataFrame(
-        {"name": ["near", "far"]},
-        geometry=[
-            LineString([(0, 100), (10, 100)]),
-            LineString([(0, 1000), (10, 1000)]),
-        ],
-        crs="EPSG:3301",
-    )
-
-    row, distance = nearest_segment(Point(0, 0), roads_gdf)
-
-    assert row["name"] == "near"
-    assert distance == pytest.approx(100.0)
-
-
-def test_nearest_segment_returns_none_for_empty_roads():
-    roads_gdf = gpd.GeoDataFrame({"name": []}, geometry=[], crs="EPSG:3301")
-
-    assert nearest_segment(Point(0, 0), roads_gdf) is None
 
 
 def test_access_score_is_zero_for_none_distance():
@@ -62,7 +38,12 @@ def test_access_reason_names_distance_and_type():
     assert access_reason(320.0, "Kõrvalmaantee") == "320m from Kõrvalmaantee-class road"
 
 
-def test_score_eraldis_access_computes_all_fields():
+def test_score_access_computes_all_fields_for_a_single_stand():
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[Point(0, 0)],
+        crs="EPSG:3301",
+    )
     roads_gdf = gpd.GeoDataFrame(
         {
             "car_class": ["HIGH_CONFIDENCE", "WALK_ONLY"],
@@ -75,49 +56,88 @@ def test_score_eraldis_access_computes_all_fields():
         crs="EPSG:3301",
     )
 
-    result = score_eraldis_access(Point(0, 0), roads_gdf)
+    result = score_access(eraldis_gdf, roads_gdf)
 
-    assert result["nearest_car_road_m"] == pytest.approx(100.0)
-    assert result["nearest_high_confidence_road_m"] == pytest.approx(100.0)
-    assert result["nearest_walk_path_m"] == pytest.approx(50.0)
-    assert result["access_confidence"] == "HIGH_CONFIDENCE"
-    assert result["access_score"] == pytest.approx(access_score(100.0))
-    assert result["access_reason"] == "100m from Kõrvalmaantee-class road"
+    assert result.loc[0, "nearest_car_road_m"] == pytest.approx(100.0)
+    assert result.loc[0, "nearest_high_confidence_road_m"] == pytest.approx(100.0)
+    assert result.loc[0, "nearest_walk_path_m"] == pytest.approx(50.0)
+    assert result.loc[0, "access_confidence"] == "HIGH_CONFIDENCE"
+    assert result.loc[0, "access_score"] == pytest.approx(access_score(100.0))
+    assert result.loc[0, "access_reason"] == "100m from Kõrvalmaantee-class road"
 
 
-def test_score_eraldis_access_handles_car_road_present_but_no_walk_path():
-    roads_gdf = gpd.GeoDataFrame(
-        {
-            "car_class": ["NORMAL"],
-            "tyyp_tekst": ["Muu tee"],
-        },
-        geometry=[LineString([(0, 100), (10, 100)])],
+def test_score_access_handles_no_car_eligible_roads():
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[Point(0, 0)],
         crs="EPSG:3301",
     )
-
-    result = score_eraldis_access(Point(0, 0), roads_gdf)
-
-    assert result["nearest_car_road_m"] == pytest.approx(100.0)
-    assert result["nearest_walk_path_m"] is None
-    assert result["nearest_high_confidence_road_m"] is None
-
-
-def test_score_eraldis_access_handles_no_roads_at_all():
     roads_gdf = gpd.GeoDataFrame(
         {"car_class": [], "tyyp_tekst": []}, geometry=[], crs="EPSG:3301"
     )
 
-    result = score_eraldis_access(Point(0, 0), roads_gdf)
+    result = score_access(eraldis_gdf, roads_gdf)
 
-    assert result["nearest_car_road_m"] is None
-    assert result["nearest_high_confidence_road_m"] is None
-    assert result["nearest_walk_path_m"] is None
-    assert result["access_score"] == 0.0
-    assert result["access_confidence"] is None
+    assert result.loc[0, "nearest_car_road_m"] is None
+    assert result.loc[0, "nearest_high_confidence_road_m"] is None
+    assert result.loc[0, "nearest_walk_path_m"] is None
+    assert result.loc[0, "access_score"] == 0.0
+    assert result.loc[0, "access_confidence"] is None
     assert (
-        result["access_reason"]
+        result.loc[0, "access_reason"]
         == f"no car-accessible road within {ACCESS_DISTANCE_CAP_M:.0f}m"
     )
+
+
+def test_score_access_aligns_each_stand_with_its_own_nearest_road():
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2, 3]},
+        geometry=[Point(0, 0), Point(1000, 1000), Point(-1000, -1000)],
+        crs="EPSG:3301",
+        index=[5, 1, 3],
+    )
+    roads_gdf = gpd.GeoDataFrame(
+        {
+            "car_class": ["NORMAL", "NORMAL", "NORMAL"],
+            "tyyp_tekst": ["Muu tee", "Muu tee", "Muu tee"],
+        },
+        geometry=[
+            LineString([(0, 5), (10, 5)]),
+            LineString([(1000, 1015), (1010, 1015)]),
+            LineString([(-1000, -975), (-990, -975)]),
+        ],
+        crs="EPSG:3301",
+    )
+
+    result = score_access(eraldis_gdf, roads_gdf)
+
+    assert result.loc[5, "nearest_car_road_m"] == pytest.approx(5.0)
+    assert result.loc[1, "nearest_car_road_m"] == pytest.approx(15.0)
+    assert result.loc[3, "nearest_car_road_m"] == pytest.approx(25.0)
+
+
+def test_score_access_resolves_tie_to_exactly_one_match():
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[Point(0, 0)],
+        crs="EPSG:3301",
+    )
+    roads_gdf = gpd.GeoDataFrame(
+        {
+            "car_class": ["NORMAL", "NORMAL"],
+            "tyyp_tekst": ["Muu tee", "Muu tee"],
+        },
+        geometry=[
+            LineString([(5, 0), (5, 10)]),
+            LineString([(-5, 0), (-5, 10)]),
+        ],
+        crs="EPSG:3301",
+    )
+
+    result = score_access(eraldis_gdf, roads_gdf)
+
+    assert len(result) == 1
+    assert result.loc[0, "nearest_car_road_m"] == pytest.approx(5.0)
 
 
 def test_score_access_appends_columns_to_eraldis_gdf():

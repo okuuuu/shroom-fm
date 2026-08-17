@@ -1,18 +1,11 @@
 import geopandas as gpd
+import pandas as pd
 
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS
 from shroom_fm.roads import CAR_CLASS_HIGH_CONFIDENCE, CAR_CLASS_WALK_ONLY
 
 CAR_ELIGIBLE_CLASSES = {"HIGH_CONFIDENCE", "NORMAL", "CONDITIONAL"}
 ACCESS_DISTANCE_CAP_M = 1500.0
-
-
-def nearest_segment(point_geom, roads_gdf: gpd.GeoDataFrame):
-    if roads_gdf.empty:
-        return None
-    distances = roads_gdf.geometry.distance(point_geom)
-    idx = distances.idxmin()
-    return roads_gdf.loc[idx], distances.loc[idx]
 
 
 def access_score(nearest_car_road_m: float | None) -> float:
@@ -27,27 +20,23 @@ def access_reason(nearest_car_road_m: float | None, tyyp_tekst: str | None) -> s
     return f"{nearest_car_road_m:.0f}m from {tyyp_tekst}-class road"
 
 
-def score_eraldis_access(eraldis_geom, roads_gdf: gpd.GeoDataFrame) -> dict:
-    car_roads = roads_gdf[roads_gdf["car_class"].isin(CAR_ELIGIBLE_CLASSES)]
-    hc_roads = roads_gdf[roads_gdf["car_class"] == CAR_CLASS_HIGH_CONFIDENCE]
-    walk_roads = roads_gdf[roads_gdf["car_class"] == CAR_CLASS_WALK_ONLY]
+def _nearest_join(
+    eraldis_projected: gpd.GeoDataFrame,
+    roads_subset: gpd.GeoDataFrame,
+    distance_col: str,
+    extra_cols: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    joined = gpd.sjoin_nearest(
+        eraldis_projected[["geometry"]],
+        roads_subset[["geometry", *extra_cols]],
+        how="left",
+        distance_col=distance_col,
+    )
+    return joined.groupby(level=0).first().reindex(eraldis_projected.index)
 
-    car_match = nearest_segment(eraldis_geom, car_roads)
-    hc_match = nearest_segment(eraldis_geom, hc_roads)
-    walk_match = nearest_segment(eraldis_geom, walk_roads)
 
-    nearest_car_road_m = car_match[1] if car_match is not None else None
-    access_confidence = car_match[0]["car_class"] if car_match is not None else None
-    nearest_car_tyyp_tekst = car_match[0]["tyyp_tekst"] if car_match is not None else None
-
-    return {
-        "nearest_car_road_m": nearest_car_road_m,
-        "nearest_high_confidence_road_m": hc_match[1] if hc_match is not None else None,
-        "nearest_walk_path_m": walk_match[1] if walk_match is not None else None,
-        "access_score": access_score(nearest_car_road_m),
-        "access_confidence": access_confidence,
-        "access_reason": access_reason(nearest_car_road_m, nearest_car_tyyp_tekst),
-    }
+def _none_if_nan(value):
+    return None if pd.isna(value) else value
 
 
 def score_access(
@@ -57,18 +46,34 @@ def score_access(
     eraldis_projected = eraldis_gdf.to_crs(ESTONIAN_GRID_CRS)
     roads_projected = roads_gdf.to_crs(ESTONIAN_GRID_CRS)
 
-    records = [
-        score_eraldis_access(geom, roads_projected) for geom in eraldis_projected.geometry
-    ]
+    car_roads = roads_projected[roads_projected["car_class"].isin(CAR_ELIGIBLE_CLASSES)]
+    hc_roads = roads_projected[roads_projected["car_class"] == CAR_CLASS_HIGH_CONFIDENCE]
+    walk_roads = roads_projected[roads_projected["car_class"] == CAR_CLASS_WALK_ONLY]
 
-    for key in (
+    car_joined = _nearest_join(
+        eraldis_projected,
+        car_roads,
         "nearest_car_road_m",
-        "nearest_high_confidence_road_m",
-        "nearest_walk_path_m",
-        "access_score",
-        "access_confidence",
-        "access_reason",
-    ):
-        result[key] = [record[key] for record in records]
+        extra_cols=("car_class", "tyyp_tekst"),
+    )
+    hc_joined = _nearest_join(eraldis_projected, hc_roads, "nearest_high_confidence_road_m")
+    walk_joined = _nearest_join(eraldis_projected, walk_roads, "nearest_walk_path_m")
+
+    nearest_car_road_m = [_none_if_nan(v) for v in car_joined["nearest_car_road_m"]]
+    access_confidence = [_none_if_nan(v) for v in car_joined["car_class"]]
+    nearest_car_tyyp_tekst = [_none_if_nan(v) for v in car_joined["tyyp_tekst"]]
+
+    result["nearest_car_road_m"] = nearest_car_road_m
+    result["nearest_high_confidence_road_m"] = [
+        _none_if_nan(v) for v in hc_joined["nearest_high_confidence_road_m"]
+    ]
+    result["nearest_walk_path_m"] = [
+        _none_if_nan(v) for v in walk_joined["nearest_walk_path_m"]
+    ]
+    result["access_confidence"] = access_confidence
+    result["access_score"] = [access_score(v) for v in nearest_car_road_m]
+    result["access_reason"] = [
+        access_reason(d, t) for d, t in zip(nearest_car_road_m, nearest_car_tyyp_tekst)
+    ]
 
     return result

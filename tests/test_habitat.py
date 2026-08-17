@@ -1,9 +1,16 @@
+import math
+
 import pytest
 
 from shroom_fm.habitat import (
     HOST_PROFILES,
     TARGET_SPECIES,
+    base_habitat,
+    ecotone_score,
+    exploration_bonus,
     host_score,
+    kasvukoht_dimension_score,
+    normalize_bool_or_none,
     site_modifier,
     site_type_score,
     stand_habitat_score,
@@ -113,3 +120,119 @@ def test_stand_habitat_score_poor_site_dampens_but_does_not_zero_strong_host():
 
     assert score == pytest.approx(0.60)
     assert score > 0.0
+
+
+def test_normalize_bool_or_none_handles_real_bool():
+    assert normalize_bool_or_none(True) is True
+    assert normalize_bool_or_none(False) is False
+
+
+def test_normalize_bool_or_none_handles_geojson_roundtrip_string():
+    # kasvukoht_group_changed round-trips through GeoJSON as the string
+    # "True"/"False", not a real bool, because it's a mixed bool+None column.
+    assert normalize_bool_or_none("True") is True
+    assert normalize_bool_or_none("False") is False
+
+
+def test_normalize_bool_or_none_handles_missing():
+    assert normalize_bool_or_none(None) is None
+    assert normalize_bool_or_none(float("nan")) is None
+
+
+def test_kasvukoht_dimension_score_prefers_moisture_contrast_when_available():
+    score = kasvukoht_dimension_score(0.5, True)
+
+    assert score == pytest.approx(0.5)
+
+
+def test_kasvukoht_dimension_score_falls_back_to_group_changed():
+    assert kasvukoht_dimension_score(None, True) == 1.0
+    assert kasvukoht_dimension_score(None, False) == 0.0
+    assert kasvukoht_dimension_score(float("nan"), True) == 1.0
+
+
+def test_kasvukoht_dimension_score_none_when_both_missing():
+    assert kasvukoht_dimension_score(None, None) is None
+
+
+def test_exploration_bonus_full_evidence():
+    bonus, signal, coverage = exploration_bonus(
+        composition_contrast=1.0,
+        moisture_contrast=1.0,
+        group_changed=True,
+        age_contrast=1.0,
+        drainage_changed=True,
+        transition_length_m=200.0,
+    )
+
+    assert signal == pytest.approx(1.0)
+    assert coverage == pytest.approx(1.0)
+    assert bonus == pytest.approx(0.3)
+
+
+def test_exploration_bonus_treats_nan_composition_contrast_as_missing():
+    # data/ecotones.geojson uses NaN (not None) for missing composition_contrast.
+    bonus, signal, coverage = exploration_bonus(
+        composition_contrast=float("nan"),
+        moisture_contrast=1.0,
+        group_changed=True,
+        age_contrast=1.0,
+        drainage_changed=True,
+        transition_length_m=200.0,
+    )
+
+    assert coverage == pytest.approx(0.65)  # 1.0 - composition_contrast's 0.35 weight
+    assert bonus == pytest.approx(0.3 * (0.25 + 0.20 + 0.10 + 0.10))
+
+
+def test_exploration_bonus_single_low_weight_term_does_not_reach_full_cap():
+    # transition_length is always computed (transition_length_m is never None),
+    # so it always contributes its 0.10 weight to coverage alongside drainage's
+    # 0.10 -> coverage=0.20 here, not just drainage's own weight.
+    bonus, signal, coverage = exploration_bonus(
+        composition_contrast=None,
+        moisture_contrast=None,
+        group_changed=None,
+        age_contrast=None,
+        drainage_changed=True,
+        transition_length_m=0.0,
+    )
+
+    assert coverage == pytest.approx(0.20)
+    assert bonus == pytest.approx(0.3 * 0.10)  # only drainage contributes to signal
+    assert bonus < 0.05
+
+
+def test_exploration_bonus_no_evidence_is_zero():
+    bonus, signal, coverage = exploration_bonus(
+        composition_contrast=None,
+        moisture_contrast=None,
+        group_changed=None,
+        age_contrast=None,
+        drainage_changed=None,
+        transition_length_m=0.0,
+    )
+
+    assert coverage == pytest.approx(0.10)  # transition_length is always available
+    assert bonus == pytest.approx(0.0)
+
+
+def test_base_habitat_weights_max_higher_than_min():
+    score = base_habitat(1.0, 0.0)
+
+    assert score == pytest.approx(0.7)
+
+
+def test_base_habitat_none_if_either_side_missing():
+    assert base_habitat(None, 0.5) is None
+    assert base_habitat(float("nan"), 0.5) is None
+
+
+def test_ecotone_score_applies_bonus_multiplicatively():
+    score = ecotone_score(1.0, 1.0, 0.3)
+
+    assert score == pytest.approx(1.3)
+
+
+def test_ecotone_score_none_if_base_habitat_missing():
+    assert ecotone_score(None, 0.5, 0.3) is None

@@ -115,3 +115,70 @@ def score_stands(eraldis_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         ]
 
     return result
+
+
+def normalize_bool_or_none(value) -> bool | None:
+    if value is True or value == "True":
+        return True
+    if value is False or value == "False":
+        return False
+    return None
+
+
+def _is_missing(value) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+TRANSITION_LENGTH_CAP_M = 200.0
+EXPLORATION_BONUS_CAP = 0.3
+
+
+def kasvukoht_dimension_score(moisture_contrast, group_changed) -> float | None:
+    if not _is_missing(moisture_contrast):
+        return moisture_contrast
+    if group_changed is True:
+        return 1.0
+    if group_changed is False:
+        return 0.0
+    return None
+
+
+def exploration_bonus(
+    composition_contrast,
+    moisture_contrast,
+    group_changed,
+    age_contrast,
+    drainage_changed,
+    transition_length_m,
+) -> tuple[float, float, float]:
+    dimension = kasvukoht_dimension_score(moisture_contrast, group_changed)
+    terms = {
+        "composition_contrast": (
+            None if _is_missing(composition_contrast) else composition_contrast,
+            0.35,
+        ),
+        "kasvukoht_dimension": (dimension, 0.25),
+        "age_contrast": (None if _is_missing(age_contrast) else age_contrast, 0.20),
+        "drainage_changed": (
+            1.0 if drainage_changed is True else 0.0 if drainage_changed is False else None,
+            0.10,
+        ),
+        "transition_length": (min(1.0, transition_length_m / TRANSITION_LENGTH_CAP_M), 0.10),
+    }
+    exploration_signal = sum(v * w for v, w in terms.values() if v is not None)
+    exploration_coverage = sum(w for v, w in terms.values() if v is not None)
+    bonus = EXPLORATION_BONUS_CAP * exploration_signal
+    return bonus, exploration_signal, exploration_coverage
+
+
+def base_habitat(score_a, score_b) -> float | None:
+    if _is_missing(score_a) or _is_missing(score_b):
+        return None
+    return 0.7 * max(score_a, score_b) + 0.3 * min(score_a, score_b)
+
+
+def ecotone_score(score_a, score_b, bonus: float) -> float | None:
+    base = base_habitat(score_a, score_b)
+    if base is None:
+        return None
+    return base * (1 + bonus)

@@ -1,0 +1,197 @@
+[
+  {
+    "name": "etak:e_101_kivi_p",
+    "title": "Kivi p",
+    "abstract": "Punktobjektid: kivi, kivihunnik, kivine ala. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_102_nolv_j",
+    "title": "Nõlv j",
+    "abstract": "Joonobjektid: nõlv, looduslik järsak, karjääri serv. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_103_pinnavorm_j",
+    "title": "Pinnavorm j",
+    "abstract": "Joonobjektid: kaitsekraav, vall, juga. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_103_pinnavorm_p",
+    "title": "Pinnavorm p",
+    "abstract": "Punktobjektid: auk, tehisküngas, koobas, ebatasane ala, kärestik. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_201_meri_a",
+    "title": "Meri a",
+    "abstract": "Pindobjektid: meri. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_202_seisuveekogu_a",
+    "title": "Seisuveekogu a",
+    "abstract": "Pindobjektid: järv, paisjärv, tehisjärv, laugas, biotiik, tiik, allikas. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_202_seisuveekogu_p",
+    "title": "Seisuveekogu p",
+    "abstract": "Punktobjektid: allikas. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_203_vooluveekogu_a",
+    "title": "Vooluveekogu a",
+    "abstract": "Pindobjektid: vooluveekogud, mis on laiemad kui 8 meetrit. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_203_vooluveekogu_j",
+    "title": "Vooluveekogu j",
+    "abstract": "Joonobjektid: jõgi, kanal, oja, peakraav, kraav. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_204_kaldajoon_j",
+    "title": "Kaldajoon j",
+    "abstract": "Joonobjektid: veekogude kaldajoon. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_205_hudrotehniline_rajatis_j",
+    "title": "Hüdrotehniline rajatis j",
+    "abstract": "Joonobjektid: muul, pais, paadisild. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_206_truup_j",
+    "title": "Truup j",
+    "abstract": "Joonobjektid: truup. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_301_muu_kolvik_a",
+    "title": "Inimasustus a",
+    "abstract": "Pindobjektid: haljasala, jäätmaa. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_301_muu_kolvik_ka",
+    "title": "Inimasustus ka",
+    "abstract": "Pindobjektid: kalmistu, sadam, lennuväli, prügila, spordikompleks, karjäär. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_301_muu_kolvik_p",
+    "title": "Inimasustus p",
+    "abstract": "Punktobjektid: üksikhaud, mälestusmärk. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_302_ou_a",
+    "title": "Õu a",
+    "abstract": "Pindobjektid: eraõu, tootmisõu. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_303_haritav_maa_a",
+    "title": "Haritav maa a",
+    "abstract": "Pindobjektid: põld, aianduslik maa. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_304_lage_a",
+    "title": "Looduslik lage a",
+    "abstract": "Pindobjektid: rohumaa, liivane ala, klibune ala, muu lage ala. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_305_puittaimestik_a",
+    "title": "Puittaimestik a",
+    "abstract": "Pindobjektid: mets, põõsastik. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_305_puittaimestik_j",
+    "title": "Puittaimestik j",
+    "abstract": "Joonobjektid: puittaimede rida. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_305_puittaimestik_p",
+    "title": "Puittaimestik p",
+    "abstract": "Punktobjektid: harvik, salu, üksik puittaim. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_306_margala_a",
+    "title": "Märgala a",
+    "abstract": "Pindobjektid: madalsoo, raba, õõtsik, soovik. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_306_margala_ka",
+    "title": "Märgala ka",
+    "abstract": "Pindobjektid: roostik. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_307_turbavali_a",
+    "title": "Turbaväli a",
+    "abstract": "Pindobjektid: turbaväli, mahajäetud turbaväli. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_401_hoone_ka",
+    "title": "Hoone ka",
+    "abstract": "Pindobjektid: elu- või ühiskondlik hoone, kõrval- või tootmishoone, vundament, vare, ehitatav hoone. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_402_korgrajatis_p",
+    "title": "Kõrgrajatis p",
+    "abstract": "Punktobjektid: korsten, sidemast, torn, valgusmast; kõrgus üle 18 meetri. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_403_muu_rajatis_ka",
+    "title": "Muu rajatis ka",
+    "abstract": "Pindobjektid: kasvuhoone, katusealune, muu rajatis. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_403_muu_rajatis_p",
+    "title": "Muu rajatis p",
+    "abstract": "Punktobjektid: muu rajatis; kõrgus on väiksem kui 18 meetrit. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_404_maaalune_hoone_ka",
+    "title": "Maa-alune hoone ka",
+    "abstract": "Pindobjektid: kelder, garaaž, muu. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_405_piire_j",
+    "title": "Piire j",
+    "abstract": "Joonobjektid: piirdeaed, kiviaed, müür, tehissein. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_501_tee_a",
+    "title": "Tee a",
+    "abstract": "Pindobjektid: teeala ja plats. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_501_tee_j",
+    "title": "Tee j",
+    "abstract": "Joonobjektid: teed ja tänavad. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_502_roobastee_j",
+    "title": "Rööbastee j",
+    "abstract": "Joonobjektid: raudtee. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_503_siht_j",
+    "title": "Siht j",
+    "abstract": "Joonobjektid: metsasiht. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_505_liikluskorralduslik_rajatis_j",
+    "title": "Liikluskorralduslik rajatis j",
+    "abstract": "Joonobjektid: ülevedu, sõidutakistus, purre, autotunnel, jalakäijate tunnel. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_505_liikluskorralduslik_rajatis_ka",
+    "title": "Liikluskorralduslik rajatis ka",
+    "abstract": "Pindobjektid: sild, viadukt. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_601_elektriliin_j",
+    "title": "Elektriliin j",
+    "abstract": "Joonobjektid: elektriliin alates 1 kV. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_602_tehnopaigaldis_p",
+    "title": "Tehnopaigaldis p",
+    "abstract": "Punktobjektid: trafo, elektrituulik, mahuti. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  },
+  {
+    "name": "etak:e_603_torujuhe_j",
+    "title": "Torujuhe j",
+    "abstract": "Joonobjektid: maapealne torujuhe. Maa- ja Ruumiamet: Eesti topograafia andmekogu."
+  }
+]

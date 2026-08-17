@@ -10,18 +10,25 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-6 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+**Status: MVP steps 1-7 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
 `config.py` (home location loading), `eraldis.py` (bbox download + radius filtering),
 `enrich.py` (joins tree composition from `eraldis_element` and resolves `kasvukoht`/`puuliik`
 classifier labels), `adjacency.py` (computes which stands are meaningfully adjacent —
-`touching` or `near_gap`), and `ecotone.py` (scores every adjacent pair by species
+`touching` or `near_gap`), `ecotone.py` (scores every adjacent pair by species
 composition contrast, kasvukoht site-type/moisture contrast, development-class age
 contrast, and drainage change — all continuous/unfiltered — and buffers the boundary into a
-scoutable microtype polygon); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
-`scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, and `scripts/score_ecotones.py`
-are runnable. Step 7+ (`HabitatScore`, exporting top N) is not yet built. This file documents
-the target architecture so implementation stays consistent; update it as more of the
-pipeline lands.
+scoutable microtype polygon), and `habitat.py` (per-species `StandHabitatScore` for stand
+interiors and `EcotoneScore` for adjacent-pair boundaries, for the five target species —
+kitsemampel, chanterelle, aspen bolete, birch bolete, porcini — from host tree composition
+and kasvukoht site-type suitability, kept as two distinct scores rather than one combined
+`HabitatScore`); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
+`scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, `scripts/score_ecotones.py`,
+`scripts/score_habitat.py`, and `scripts/score_ecotone_habitat.py` are runnable (the last
+two must run in that order — ecotone habitat scoring depends on stands already being
+scored). Step 8+ (`ScoutScore` — combining `EcotoneScore` with weather, observation history,
+landscape-mosaic diversity, and access penalty — and exporting top N) is not yet built. This
+file documents the target architecture so implementation stays consistent; update it as more
+of the pipeline lands.
 
 **Known real-data quirks** (found only via live verification against real Metsaregister
 data, not visible from synthetic test fixtures):

@@ -182,3 +182,41 @@ def ecotone_score(score_a, score_b, bonus: float) -> float | None:
     if base is None:
         return None
     return base * (1 + bonus)
+
+
+def score_ecotone_habitat(
+    ecotones_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
+    result = ecotones_gdf.copy()
+
+    stand_scores_by_species = {
+        species: dict(zip(eraldis_gdf["id"], eraldis_gdf[f"stand_habitat_score_{species}"]))
+        for species in TARGET_SPECIES
+    }
+
+    bonuses, signals, coverages = [], [], []
+    for _, row in result.iterrows():
+        bonus, signal, coverage = exploration_bonus(
+            composition_contrast=row["composition_contrast"],
+            moisture_contrast=row["kasvukoht_moisture_contrast"],
+            group_changed=normalize_bool_or_none(row["kasvukoht_group_changed"]),
+            age_contrast=row["age_contrast"],
+            drainage_changed=normalize_bool_or_none(row["drainage_changed"]),
+            transition_length_m=row["transition_length_m"],
+        )
+        bonuses.append(bonus)
+        signals.append(signal)
+        coverages.append(coverage)
+
+    result["exploration_bonus"] = bonuses
+    result["exploration_signal"] = signals
+    result["exploration_coverage"] = coverages
+
+    for species in TARGET_SPECIES:
+        lookup = stand_scores_by_species[species]
+        result[f"ecotone_score_{species}"] = [
+            ecotone_score(lookup.get(id_a), lookup.get(id_b), bonus)
+            for id_a, id_b, bonus in zip(result["id_a"], result["id_b"], bonuses)
+        ]
+
+    return result

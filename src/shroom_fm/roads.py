@@ -67,8 +67,8 @@ def fetch_layer_bbox(url: str, typename: str, bbox: tuple[float, float, float, f
     # getfeature() silently re-serializes any bbox tuple back to (lon, lat)
     # regardless of the order passed in, defeating the axis fix — confirmed
     # live by inspecting the actual request URL it sends — so this fetch
-    # uses requests directly instead, matching enrich.py's precedent for
-    # owslib limitations.
+    # uses a raw requests-based fetch (via get_with_retry) instead,
+    # matching enrich.py's precedent for owslib limitations.
     minx, miny, maxx, maxy = bbox
     bbox_param = f"{miny},{minx},{maxy},{maxx},{_WGS84_URN}"
     pages = []

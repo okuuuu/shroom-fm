@@ -61,3 +61,76 @@ def test_classify_car_class_raises_for_unrecognized_tyyp_tekst():
 def test_classify_car_class_raises_for_unrecognized_muu_tee_surface():
     with pytest.raises(ValueError):
         classify_car_class("Muu tee", "Mingi tundmatu kate")
+
+
+import geopandas as gpd
+from shapely.geometry import LineString, Point
+
+from shroom_fm.roads import exclude_barrier_blocked_segments
+
+
+def test_exclude_barrier_blocked_segments_removes_segment_near_closed_barrier():
+    roads_gdf = gpd.GeoDataFrame(
+        {"name": ["blocked", "clear"]},
+        geometry=[
+            LineString([(0, 0), (10, 0)]),
+            LineString([(1000, 1000), (1010, 1000)]),
+        ],
+        crs="EPSG:3301",
+    )
+    barriers_gdf = gpd.GeoDataFrame(
+        {"toke_tekst": ["Püsivalt suletud"]},
+        geometry=[Point(5, 3)],  # 3m from "blocked", within BARRIER_SNAP_M
+        crs="EPSG:3301",
+    )
+
+    result = exclude_barrier_blocked_segments(roads_gdf, barriers_gdf)
+
+    assert list(result["name"]) == ["clear"]
+
+
+def test_exclude_barrier_blocked_segments_keeps_segment_near_openable_barrier():
+    roads_gdf = gpd.GeoDataFrame(
+        {"name": ["near_openable"]},
+        geometry=[LineString([(0, 0), (10, 0)])],
+        crs="EPSG:3301",
+    )
+    barriers_gdf = gpd.GeoDataFrame(
+        {"toke_tekst": ["Avatav"]},
+        geometry=[Point(5, 3)],
+        crs="EPSG:3301",
+    )
+
+    result = exclude_barrier_blocked_segments(roads_gdf, barriers_gdf)
+
+    assert list(result["name"]) == ["near_openable"]
+
+
+def test_exclude_barrier_blocked_segments_keeps_all_when_no_barriers():
+    roads_gdf = gpd.GeoDataFrame(
+        {"name": ["a"]},
+        geometry=[LineString([(0, 0), (10, 0)])],
+        crs="EPSG:3301",
+    )
+    barriers_gdf = gpd.GeoDataFrame({"toke_tekst": []}, geometry=[], crs="EPSG:3301")
+
+    result = exclude_barrier_blocked_segments(roads_gdf, barriers_gdf)
+
+    assert list(result["name"]) == ["a"]
+
+
+def test_exclude_barrier_blocked_segments_keeps_segment_beyond_snap_distance():
+    roads_gdf = gpd.GeoDataFrame(
+        {"name": ["far"]},
+        geometry=[LineString([(0, 0), (10, 0)])],
+        crs="EPSG:3301",
+    )
+    barriers_gdf = gpd.GeoDataFrame(
+        {"toke_tekst": ["Püsivalt suletud"]},
+        geometry=[Point(100, 100)],  # ~135m away, beyond BARRIER_SNAP_M
+        crs="EPSG:3301",
+    )
+
+    result = exclude_barrier_blocked_segments(roads_gdf, barriers_gdf)
+
+    assert list(result["name"]) == ["far"]

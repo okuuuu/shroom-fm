@@ -4,8 +4,8 @@ from shroom_fm.config import load_home_location
 from shroom_fm.eraldis import compute_bbox, fetch_eraldis_bbox, filter_within_radius
 from shroom_fm.wfs import fetch_capabilities
 
-RADIUS_KM = 20.0
-INNER_RADIUS_KM = 0.0
+RADIUS_KM = 38.0
+INNER_RADIUS_KM = 18.0
 OUTPUT_PATH = Path("data/eraldis.geojson")
 
 

@@ -227,3 +227,5 @@ config.toml
 data/eraldis.geojson
 data/adjacency.geojson
 data/ecotones.geojson
+data/roads.geojson
+data/barriers.geojson

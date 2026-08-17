@@ -32,6 +32,20 @@ of the pipeline lands.
 
 **Known real-data quirks** (found only via live verification against real Metsaregister
 data, not visible from synthetic test fixtures):
+- ETAK's WFS (`etak:e_501_tee_j` and presumably other ETAK layers) behaves differently from
+  Metsaregister's WFS in two ways, both confirmed live 2026-08-17: (1) it only allows
+  `srsName=EPSG:3301` for output geometry on this layer — `EPSG:4326` is rejected with an
+  `ows:ExceptionReport`; (2) its `bbox` GetFeature parameter enforces the EPSG:4326 URN's
+  strict authority-defined axis order (**lat, lon** — not the "GIS convention" lon,lat that
+  Metsaregister's WFS accepts), confirmed by testing both orders directly against the live
+  server. Separately, `owslib`'s `WebFeatureService.getfeature()` silently re-serializes any
+  bbox tuple it's given back into lon,lat order on the wire regardless of the order passed
+  in — confirmed by inspecting the actual outgoing request URL — so an axis-order fix cannot
+  be applied through `owslib` at all for this endpoint. `roads.py`'s `fetch_layer_bbox`
+  bypasses `owslib` and builds the GetFeature request with `requests` directly (same
+  workaround pattern as `enrich.py`'s `fetch_eraldis_element`, which bypasses `owslib` for a
+  different limitation — no CQL support), swaps the bbox to `(miny, minx, maxy, maxx, urn)`,
+  and requests `srsName=EPSG:3301`.
 - A composition entry's `osakaal` (share) can be `NaN` for understory/undergrowth layers
   (`rinne_kood: "A"`) — the registry doesn't measure a stocking share for undergrowth. Around
   15% of real stands have at least one such entry. Any code summing `osakaal` across a

@@ -37,6 +37,13 @@ data, not visible from synthetic test fixtures):
   list (no matching `eraldis_element` rows at all). Downstream code must treat "no
   composition data" as `None`/`NaN`, not silently compute a plausible-looking but fabricated
   value from an empty/all-zero input.
+- `ecotone.py`'s `kasvukoht_group_changed` column (nullable bool: `True`/`False`/`None` for
+  unmapped kasvukoht codes) round-trips through GeoJSON as the **string** `"True"`/`"False"`,
+  not a real bool — confirmed by reading `data/ecotones.geojson` back with `geopandas`. This
+  is a `fiona`/GeoDataFrame GeoJSON quirk affecting mixed bool+`None` columns specifically:
+  `drainage_changed` (always a real bool, never `None`) round-trips fine and stays `bool`.
+  Any code reading `kasvukoht_group_changed` back from the saved GeoJSON must compare against
+  the strings `"True"`/`"False"` (or cast explicitly), not `is True`/`is False`.
 
 ## Planned architecture
 

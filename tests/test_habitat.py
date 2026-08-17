@@ -28,7 +28,7 @@ def test_host_score_uses_best_host_not_sum_of_hosts():
 
     score = host_score("porcini", mediocre_mix)
 
-    assert score < 1.0
+    assert score == pytest.approx(0.75)
 
 
 def test_host_score_aspen_bolete_does_not_need_aspen_dominance():

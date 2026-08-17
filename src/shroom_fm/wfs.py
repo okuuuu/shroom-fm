@@ -3,12 +3,14 @@ from pathlib import Path
 
 from owslib.wfs import WebFeatureService
 
+from shroom_fm.retry import call_with_retry
+
 METSAREGISTER_OWS_URL = "https://gsavalik.envir.ee/geoserver/metsaregister/ows"
 ETAK_WFS_URL = "https://gsavalik.envir.ee/geoserver/etak/wfs"
 
 
 def fetch_capabilities(url: str = METSAREGISTER_OWS_URL) -> WebFeatureService:
-    return WebFeatureService(url, version="2.0.0")
+    return call_with_retry(WebFeatureService, url, version="2.0.0")
 
 
 def layer_summary(wfs) -> list[dict]:

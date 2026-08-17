@@ -2,9 +2,9 @@ import json
 
 import geopandas as gpd
 import pandas as pd
-import requests
 from owslib.wfs import WebFeatureService
 
+from shroom_fm.retry import call_with_retry, get_with_retry
 from shroom_fm.wfs import METSAREGISTER_OWS_URL
 
 COMPOSITION_DETAIL_COLUMNS = [
@@ -54,7 +54,9 @@ def compute_species_shares(composition: list[dict]) -> dict[str, float]:
 
 
 def fetch_classifier(wfs: WebFeatureService, typename: str) -> dict[str, str]:
-    response = wfs.getfeature(typename=typename, outputFormat="application/json")
+    response = call_with_retry(
+        wfs.getfeature, typename=typename, outputFormat="application/json"
+    )
     data = json.loads(response.read())
     return {
         feature["properties"]["kood"]: feature["properties"]["kirjeldus"]
@@ -67,7 +69,7 @@ def fetch_eraldis_element(eraldis_ids: list[int]) -> pd.DataFrame:
     for i in range(0, len(eraldis_ids), ID_BATCH_SIZE):
         batch = eraldis_ids[i : i + ID_BATCH_SIZE]
         id_list = ",".join(str(eid) for eid in batch)
-        response = requests.get(
+        response = get_with_retry(
             METSAREGISTER_OWS_URL,
             params={
                 "service": "WFS",
@@ -77,6 +79,7 @@ def fetch_eraldis_element(eraldis_ids: list[int]) -> pd.DataFrame:
                 "outputFormat": "application/json",
                 "CQL_FILTER": f"eraldis_id IN ({id_list})",
             },
+            timeout=30,
         )
         data = response.json()
         rows.extend(feature["properties"] for feature in data["features"])

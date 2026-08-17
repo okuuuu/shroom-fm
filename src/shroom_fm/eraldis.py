@@ -6,6 +6,8 @@ import pandas as pd
 from owslib.wfs import WebFeatureService
 from shapely.geometry import Point
 
+from shroom_fm.retry import call_with_retry
+
 KM_PER_DEGREE_LAT = 111.32
 BBOX_PADDING_FACTOR = 1.1
 ESTONIAN_GRID_CRS = "EPSG:3301"
@@ -51,7 +53,8 @@ def fetch_eraldis_bbox(
     pages = []
     start_index = 0
     while True:
-        response = wfs.getfeature(
+        response = call_with_retry(
+            wfs.getfeature,
             typename=ERALDIS_TYPENAME,
             bbox=(*bbox, WGS84_URN),
             srsname=WGS84_CRS,

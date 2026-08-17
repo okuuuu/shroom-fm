@@ -2,7 +2,8 @@ import io
 
 import geopandas as gpd
 import pandas as pd
-import requests
+
+from shroom_fm.retry import get_with_retry
 
 CAR_CLASS_HIGH_CONFIDENCE = "HIGH_CONFIDENCE"
 CAR_CLASS_NORMAL = "NORMAL"
@@ -73,7 +74,7 @@ def fetch_layer_bbox(url: str, typename: str, bbox: tuple[float, float, float, f
     pages = []
     start_index = 0
     while True:
-        response = requests.get(
+        response = get_with_retry(
             url,
             params={
                 "service": "WFS",
@@ -86,8 +87,8 @@ def fetch_layer_bbox(url: str, typename: str, bbox: tuple[float, float, float, f
                 "startIndex": start_index,
                 "count": _PAGE_SIZE,
             },
+            timeout=30,
         )
-        response.raise_for_status()
         page = gpd.read_file(io.BytesIO(response.content))
         pages.append(page)
         if len(page) < _PAGE_SIZE:

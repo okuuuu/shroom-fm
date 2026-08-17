@@ -35,6 +35,7 @@ def main() -> None:
     barriers_projected = barriers.to_crs(ESTONIAN_GRID_CRS)
     roads_projected = exclude_barrier_blocked_segments(roads_projected, barriers_projected)
     roads = roads_projected.to_crs(WGS84_CRS)
+    barriers = barriers_projected.to_crs(WGS84_CRS)
 
     ROADS_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     roads.to_file(ROADS_OUTPUT_PATH, driver="GeoJSON")

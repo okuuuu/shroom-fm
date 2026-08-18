@@ -110,6 +110,51 @@ def test_query_radar_documents_terminates_on_null_bookmark_even_if_page_is_full(
     assert "bookmark" not in captured_bodies[0]
 
 
+def test_query_radar_documents_terminates_on_empty_page_with_repeating_bookmark(monkeypatch):
+    """Regression test: real KAIA API behavior — once caught up, it echoes the SAME
+    non-null bookmark forever with an empty documents list. It never returns
+    nextBookmark: null in practice. Must terminate on empty page, not null bookmark."""
+    pages = [
+        {
+            "documents": [
+                {
+                    "id": 1,
+                    "metadata": {"Timestamp": "2026-08-18T09:00:00.0000000+03:00"},
+                    "fileMetadata": [{"id": 1}],
+                }
+            ],
+            "nextBookmark": "cursor-A",
+        },
+        {
+            "documents": [],
+            "nextBookmark": "cursor-A",  # same bookmark repeated, NOT null
+        },
+    ]
+    captured_bodies = []
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    def fake_post_with_retry(url, *, json, timeout):
+        captured_bodies.append(json)
+        return _FakeResponse(pages[len(captured_bodies) - 1])
+
+    monkeypatch.setattr("shroom_fm.radar.post_with_retry", fake_post_with_retry)
+
+    result = query_radar_documents(_utc(2026, 8, 18, 6))
+
+    # Should have exactly 1 document (from first page only)
+    assert len(result) == 1
+    # Should have made exactly 2 requests (one to get the document, one to discover empty page)
+    assert len(captured_bodies) == 2
+    # Second request should have had the bookmark from first page
+    assert captured_bodies[1]["bookmark"] == "cursor-A"
+
+
 def test_download_radar_composite_skips_if_already_cached(tmp_path, monkeypatch):
     document = {"id": 42, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
     cache_dir = tmp_path / "radar_cache"

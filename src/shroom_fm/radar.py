@@ -56,9 +56,9 @@ def query_radar_documents(since: datetime) -> list[dict]:
                     ).astimezone(timezone.utc),
                 }
             )
-        bookmark = data.get("nextBookmark")
-        if bookmark is None:
+        if not data["documents"] or data.get("nextBookmark") is None:
             break
+        bookmark = data.get("nextBookmark")
     return documents
 
 

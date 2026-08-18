@@ -1,4 +1,6 @@
 import concurrent.futures
+import requests
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,8 +17,10 @@ KAIA_DOWNLOAD_URL_TEMPLATE = (
 )
 RADAR_CONTENT_TYPE = "0102FB01"
 RADAR_PHENOMENON = "COMP"
-MAX_WORKERS = 6
+MAX_WORKERS = 3
 _PAGE_SIZE = 2000
+_DOWNLOAD_429_MAX_ATTEMPTS = 6
+_DOWNLOAD_429_INITIAL_BACKOFF = 5.0
 
 
 def query_radar_documents(since: datetime) -> list[dict]:
@@ -71,14 +75,31 @@ def cached_radar_timestamp(path: Path) -> datetime:
     return datetime.strptime(stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
 
 
-def download_radar_composite(document: dict, cache_dir: Path) -> Path:
+def download_radar_composite(
+    document: dict, cache_dir: Path, *, sleep=time.sleep
+) -> Path:
     path = cache_dir / _cache_filename(document)
     if path.exists():
         return path
     url = KAIA_DOWNLOAD_URL_TEMPLATE.format(
         id=document["id"], file_id=document["file_id"]
     )
-    response = get_with_retry(url, timeout=30)
+
+    backoff = _DOWNLOAD_429_INITIAL_BACKOFF
+    response = None
+    for attempt in range(_DOWNLOAD_429_MAX_ATTEMPTS):
+        try:
+            response = get_with_retry(url, timeout=30)
+            break
+        except requests.exceptions.HTTPError as exc:
+            is_rate_limited = (
+                exc.response is not None and exc.response.status_code == 429
+            )
+            if not is_rate_limited or attempt == _DOWNLOAD_429_MAX_ATTEMPTS - 1:
+                raise
+            sleep(backoff)
+            backoff *= 2
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     path.write_bytes(response.content)
     return path

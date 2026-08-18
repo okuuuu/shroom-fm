@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 import h5py
 import numpy as np
 import pytest
+import requests
 
 from shroom_fm.radar import (
     accumulate_rainfall,
@@ -195,6 +196,80 @@ def test_download_radar_composite_fetches_and_caches_new_file(tmp_path, monkeypa
     ]
     assert result.read_bytes() == b"real-h5-bytes"
     assert result.name == "20260818T090500Z_43.h5"
+
+
+def test_download_radar_composite_retries_on_429_then_succeeds(tmp_path, monkeypatch):
+    document = {"id": 99, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
+    cache_dir = tmp_path / "radar_cache"
+
+    class _FakeResponse:
+        content = b"bytes"
+
+    class _Fake429Response:
+        status_code = 429
+
+    call_count = [0]
+    sleeps = []
+
+    def fake_get_with_retry(url, timeout):
+        call_count[0] += 1
+        if call_count[0] < 3:
+            error = requests.exceptions.HTTPError()
+            error.response = _Fake429Response()
+            raise error
+        return _FakeResponse()
+
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", fake_get_with_retry)
+
+    result = download_radar_composite(document, cache_dir, sleep=sleeps.append)
+
+    assert result.read_bytes() == b"bytes"
+    assert call_count[0] == 3
+    assert len(sleeps) == 2
+
+
+def test_download_radar_composite_exhausts_retries_and_raises_on_persistent_429(
+    tmp_path, monkeypatch
+):
+    document = {"id": 100, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
+    cache_dir = tmp_path / "radar_cache"
+
+    class _Fake429Response:
+        status_code = 429
+
+    def fake_get_with_retry(url, timeout):
+        error = requests.exceptions.HTTPError()
+        error.response = _Fake429Response()
+        raise error
+
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", fake_get_with_retry)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        download_radar_composite(document, cache_dir, sleep=lambda s: None)
+
+
+def test_download_radar_composite_does_not_retry_non_429_http_errors(
+    tmp_path, monkeypatch
+):
+    document = {"id": 101, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
+    cache_dir = tmp_path / "radar_cache"
+    calls = []
+
+    class _Fake404Response:
+        status_code = 404
+
+    def fake_get_with_retry(url, timeout):
+        calls.append(1)
+        error = requests.exceptions.HTTPError()
+        error.response = _Fake404Response()
+        raise error
+
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", fake_get_with_retry)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        download_radar_composite(document, cache_dir, sleep=lambda s: None)
+
+    assert len(calls) == 1
 
 
 def test_cached_radar_timestamp_parses_filename(tmp_path):

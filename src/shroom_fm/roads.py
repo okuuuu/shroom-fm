@@ -3,6 +3,7 @@ import io
 import geopandas as gpd
 import pandas as pd
 
+from shroom_fm.cql import annulus_filter
 from shroom_fm.retry import get_with_retry
 
 CAR_CLASS_HIGH_CONFIDENCE = "HIGH_CONFIDENCE"
@@ -53,24 +54,21 @@ def exclude_barrier_blocked_segments(
 
 ROAD_TYPENAME = "etak:e_501_tee_j"
 BARRIER_TYPENAME = "etak:e_505_liikluskorralduslik_rajatis_j"
+GEOMETRY_ATTR = "shape"
 
 _PAGE_SIZE = 1000
-_WGS84_URN = "urn:ogc:def:crs:EPSG::4326"
 _ETAK_OUTPUT_CRS = "EPSG:3301"
 
 
-def fetch_layer_bbox(url: str, typename: str, bbox: tuple[float, float, float, float]) -> gpd.GeoDataFrame:
-    # ETAK's WFS (unlike Metsaregister's) enforces the EPSG:4326 URN's strict
-    # authority axis order (lat, lon) for the bbox filter, and only allows
-    # EPSG:3301 as output srsName for this layer — both confirmed live
-    # 2026-08-17 (see CLAUDE.md's "Known real-data quirks"). owslib's
-    # getfeature() silently re-serializes any bbox tuple back to (lon, lat)
-    # regardless of the order passed in, defeating the axis fix — confirmed
-    # live by inspecting the actual request URL it sends — so this fetch
-    # uses a raw requests-based fetch (via get_with_retry) instead,
-    # matching enrich.py's precedent for owslib limitations.
-    minx, miny, maxx, maxy = bbox
-    bbox_param = f"{miny},{minx},{maxy},{maxx},{_WGS84_URN}"
+def fetch_layer_annulus(
+    url: str,
+    typename: str,
+    lat: float,
+    lon: float,
+    radius_km: float,
+    inner_radius_km: float = 0.0,
+) -> gpd.GeoDataFrame:
+    cql_filter = annulus_filter(GEOMETRY_ATTR, lat, lon, radius_km, inner_radius_km)
     pages = []
     start_index = 0
     while True:
@@ -81,9 +79,9 @@ def fetch_layer_bbox(url: str, typename: str, bbox: tuple[float, float, float, f
                 "version": "2.0.0",
                 "request": "GetFeature",
                 "typeNames": typename,
-                "bbox": bbox_param,
-                "srsName": _ETAK_OUTPUT_CRS,
                 "outputFormat": "application/json",
+                "srsName": _ETAK_OUTPUT_CRS,
+                "CQL_FILTER": cql_filter,
                 "startIndex": start_index,
                 "count": _PAGE_SIZE,
             },

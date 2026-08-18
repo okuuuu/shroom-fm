@@ -54,7 +54,7 @@ branches done; step 9 needs everything upstream:
 
 1. `uv run python scripts/download_eraldis.py` — Metsaregister stands within home radius →
    `data/eraldis.geojson` (`RADIUS_KM`/`INNER_RADIUS_KM` script constants; currently a
-   38km/18km annulus)
+   70km/33km annulus)
 2. `uv run python scripts/enrich_eraldis.py` — join tree composition + kasvukoht/puuliik
    labels onto `data/eraldis.geojson`
 3. `uv run python scripts/compute_adjacency.py` — find adjacent stand pairs →
@@ -74,11 +74,27 @@ branches done; step 9 needs everything upstream:
 9. `uv run python scripts/export_scout_candidates.py` — top-5-per-species `ScoutScore` v0
    shortlist → `data/scout_candidates.geojson` (needs steps 5, 6, and 8 already done)
 
-At real scale (~65k stands, ~50k road segments within a 20km-wide annulus around Tallinn):
-step 1 is fast (CQL server-side filtering), steps 3-6 are fast (local computation), step 7
-takes several minutes (paginated WFS fetch, ETAK's road network is dense), step 8 takes well
-under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step
-9 is near-instant.
+At real scale (262,054 stands, 82,731 road segments, 1,878 barriers within the current
+33-70km/37km-wide annulus around home): steps 1 (`download_eraldis`), 2 (`enrich_eraldis`),
+and 7 (`download_roads`) now fetch WFS pages/batches concurrently (6 workers, via
+`concurrent_fetch.py`) with per-page/per-batch progress output printed as they complete,
+instead of running silently. Measured wall-clock times from a live run against the real
+Metsaregister/ETAK endpoints on 2026-08-18, at this radius: step 1 12m58s (263 eraldis
+pages), step 2 8m5s (525 `eraldis_element` composition batches — previously 471.2s
+sequential for only 131 batches at the old, smaller 38km/18km radius, so per-batch
+throughput improved roughly 4x even though this run covers 4x the batches in about the same
+total wall time), step 7 2m32s for both the roads and barriers layers (previously ~4-5min,
+also at the old smaller radius, so this is faster in absolute terms despite the current
+radius yielding more roads/barriers than before). Steps 3-6 are fast (local computation),
+step 8 takes well under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a
+brute-force loop), step 9 is near-instant.
+
+Note: the road/barrier counts above (82,731 / 1,878) are higher than an earlier plan
+document's "50,008 roads, 1,564 barriers" figure — that figure was measured at the old
+38km/18km radius before `download_roads.py`'s `RADIUS_KM`/`INNER_RADIUS_KM` were widened to
+70km/33km in the same change that widened `download_eraldis.py`'s, and was never
+re-verified against the wider radius. The 82,731/1,878 counts here are live-verified against
+the current script constants.
 
 **Known real-data quirks** (found only via live verification against real Metsaregister
 data, not visible from synthetic test fixtures):

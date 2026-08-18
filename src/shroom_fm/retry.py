@@ -49,3 +49,21 @@ def get_with_retry(
     return call_with_retry(
         _get, max_attempts=max_attempts, backoff_seconds=backoff_seconds, sleep=sleep
     )
+
+
+def post_with_retry(
+    url: str,
+    *,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    backoff_seconds: tuple[float, ...] = DEFAULT_BACKOFF_SECONDS,
+    sleep=time.sleep,
+    **kwargs,
+):
+    def _post():
+        response = requests.post(url, **kwargs)
+        response.raise_for_status()
+        return response
+
+    return call_with_retry(
+        _post, max_attempts=max_attempts, backoff_seconds=backoff_seconds, sleep=sleep
+    )

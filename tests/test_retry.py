@@ -1,7 +1,7 @@
 import requests
 import pytest
 
-from shroom_fm.retry import call_with_retry, get_with_retry
+from shroom_fm.retry import call_with_retry, get_with_retry, post_with_retry
 
 
 def _http_error(status_code: int) -> requests.exceptions.HTTPError:
@@ -157,3 +157,33 @@ def test_get_with_retry_does_not_retry_client_error(monkeypatch):
         get_with_retry("http://example.com", sleep=lambda s: None)
 
     assert len(calls) == 1
+
+
+def test_post_with_retry_sends_json_body_and_returns_response(monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(200)
+
+    monkeypatch.setattr("shroom_fm.retry.requests.post", fake_post)
+
+    result = post_with_retry(
+        "http://example.com", json={"a": 1}, timeout=30, sleep=lambda s: None
+    )
+
+    assert result.status_code == 200
+    assert calls == [("http://example.com", {"json": {"a": 1}, "timeout": 30})]
+
+
+def test_post_with_retry_retries_server_error_then_succeeds(monkeypatch):
+    responses = [_FakeResponse(503), _FakeResponse(200)]
+
+    def fake_post(url, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr("shroom_fm.retry.requests.post", fake_post)
+
+    result = post_with_retry("http://example.com", sleep=lambda s: None)
+
+    assert result.status_code == 200

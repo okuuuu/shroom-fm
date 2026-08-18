@@ -284,6 +284,54 @@ def test_radar_pixel_centers_builds_one_point_per_pixel_in_native_crs(tmp_path):
     assert points.crs is not None
 
 
+def test_radar_pixel_centers_applies_row_col_offset_for_sliced_grids():
+    # georef as if parse_radar_composite sliced a larger grid starting at row 3, col 4
+    # (row_offset/col_offset != 0) — verifies pixel centers land at their TRUE absolute
+    # position in the full grid, not as if the sliced sub-array were itself grid (0,0).
+    georef = {
+        "projdef": "+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        "xsize": 2,
+        "ysize": 2,
+        "xscale": 359.07,
+        "yscale": 346.70,
+        "ul_lon": 20.354150207505985,
+        "ul_lat": 61.33568305549931,
+        "row_offset": 3,
+        "col_offset": 4,
+    }
+    # Same georef but row_offset/col_offset = 0, for comparison — this represents the
+    # UNSLICED full grid's pixel (3,4) computed directly.
+    full_georef_at_3_4 = {
+        **georef,
+        "xsize": 1,
+        "ysize": 1,
+        "row_offset": 3,
+        "col_offset": 4,
+    }
+
+    offset_points = radar_pixel_centers(georef)
+    reference_point = radar_pixel_centers(full_georef_at_3_4)
+
+    # The offset grid's (row=3, col=4) pixel — its local index (0,0) — must land at
+    # exactly the same absolute coordinate as computing pixel (3,4) directly.
+    offset_pixel = offset_points[
+        (offset_points["row"] == 3) & (offset_points["col"] == 4)
+    ].iloc[0]
+    reference_pixel = reference_point.iloc[0]
+
+    assert offset_pixel.geometry.x == pytest.approx(reference_pixel.geometry.x)
+    assert offset_pixel.geometry.y == pytest.approx(reference_pixel.geometry.y)
+
+    # And confirm it is NOT the same as what pixel (0,0) of an unsliced grid would be
+    # (i.e. the offset genuinely moved the pixel, this isn't a vacuous comparison)
+    zero_offset_georef = {**georef, "row_offset": 0, "col_offset": 0}
+    zero_offset_points = radar_pixel_centers(zero_offset_georef)
+    zero_offset_pixel = zero_offset_points[
+        (zero_offset_points["row"] == 0) & (zero_offset_points["col"] == 0)
+    ].iloc[0]
+    assert offset_pixel.geometry.x != pytest.approx(zero_offset_pixel.geometry.x)
+
+
 def test_radar_bbox_slice_covers_a_small_eraldis_bbox_within_the_full_grid():
     # Real live-verified radar grid: 1500x1500, ~359m/347m pixels, Mercator, UL corner
     # at 61.336N/20.354E. A small bbox near Tallinn (~59.4N/24.8E) should slice out a

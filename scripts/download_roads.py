@@ -11,8 +11,8 @@ from shroom_fm.roads import (
 )
 from shroom_fm.wfs import ETAK_WFS_URL
 
-RADIUS_KM = 38.0
-INNER_RADIUS_KM = 18.0
+RADIUS_KM = 70.0
+INNER_RADIUS_KM = 33.0
 ROADS_OUTPUT_PATH = Path("data/roads.geojson")
 BARRIERS_OUTPUT_PATH = Path("data/barriers.geojson")
 

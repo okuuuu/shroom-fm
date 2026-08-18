@@ -6,7 +6,7 @@ import pandas as pd
 from shroom_fm.habitat import TARGET_SPECIES
 from shroom_fm.scout import join_ecotone_access, scout_candidates_for_species
 
-TOP_N = 5
+TOP_N = 10
 ERALDIS_PATH = Path("data/eraldis.geojson")
 ECOTONES_PATH = Path("data/ecotones.geojson")
 OUTPUT_PATH = Path("data/scout_candidates.geojson")

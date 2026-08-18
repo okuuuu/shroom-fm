@@ -3,8 +3,8 @@ from pathlib import Path
 from shroom_fm.config import load_home_location
 from shroom_fm.eraldis import fetch_eraldis_annulus
 
-RADIUS_KM = 38.0
-INNER_RADIUS_KM = 18.0
+RADIUS_KM = 70.0
+INNER_RADIUS_KM = 33.0
 OUTPUT_PATH = Path("data/eraldis.geojson")
 
 

@@ -135,3 +135,40 @@ def test_fetch_meps_hourly_accepts_latest_dataset_with_matching_time(monkeypatch
     result = fetch_meps_hourly(requested_hour, (24.0, 59.0, 25.0, 60.0))
 
     assert result is not None
+
+
+def test_fetch_meps_hourly_treats_sel_failure_as_unavailable(monkeypatch):
+    # A transient OSError during .sel()/.load() (both can trigger lazy OPeNDAP network
+    # I/O) must be treated as "this hour unavailable", not escape and abort the whole
+    # accumulate_meps_features run. Exercises BOTH loop attempts (archive url with
+    # verify_time=False, and MEPS_LATEST_URL with verify_time=True) — the fake dataset's
+    # "time" value matches expected_time so the verify_time branch passes through to
+    # .sel(), which then raises OSError on both attempts.
+    from shroom_fm.meps import fetch_meps_hourly
+
+    requested_hour = _utc(2026, 8, 15, 6)
+    expected_time = np.datetime64("2026-08-15T06:00:00")
+
+    class _TimeValues:
+        values = np.array([expected_time])
+
+    class _FailingDataset:
+        def __getitem__(self, key):
+            if key == "time":
+                return _TimeValues()
+            raise KeyError(key)
+
+        def sel(self, **kwargs):
+            raise OSError("transient network failure during lazy read")
+
+        def close(self):
+            pass
+
+    def fake_open_dataset(url):
+        return _FailingDataset()
+
+    monkeypatch.setattr("shroom_fm.meps.xr.open_dataset", fake_open_dataset)
+
+    result = fetch_meps_hourly(requested_hour, (24.0, 59.0, 25.0, 60.0))
+
+    assert result is None

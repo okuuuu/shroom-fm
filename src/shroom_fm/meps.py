@@ -52,6 +52,8 @@ def fetch_meps_hourly(
             if subset.sizes.get("x", 0) == 0 or subset.sizes.get("y", 0) == 0:
                 continue
             return subset.load()
+        except OSError:
+            continue
         finally:
             dataset.close()
     return None

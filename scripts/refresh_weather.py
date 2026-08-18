@@ -3,7 +3,7 @@ from pathlib import Path
 
 import geopandas as gpd
 
-from shroom_fm.radar import expire_old_radar_composites, fetch_new_radar_composites, newest_cached_radar_timestamp
+from shroom_fm.radar import expire_old_radar_composites, fetch_new_radar_composites
 from shroom_fm.weather import refresh_weather
 
 RADAR_CACHE_DIR = Path("data/radar_cache")
@@ -15,9 +15,7 @@ RADAR_WINDOW_DAYS = 14
 def main() -> None:
     now = datetime.now(timezone.utc)
 
-    since = newest_cached_radar_timestamp(RADAR_CACHE_DIR)
-    if since is None:
-        since = now - timedelta(days=RADAR_WINDOW_DAYS)
+    since = now - timedelta(days=RADAR_WINDOW_DAYS)
     new_files = fetch_new_radar_composites(RADAR_CACHE_DIR, since)
     print(f"{len(new_files)} new radar composites downloaded")
 

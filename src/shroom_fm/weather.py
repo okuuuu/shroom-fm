@@ -10,6 +10,7 @@ from shroom_fm.radar import accumulate_rainfall
 
 MIN_RADAR_COVERAGE = 0.7
 MAX_MEPS_STALENESS_HOURS = 6
+MIN_MEPS_COVERAGE = 0.7
 
 _RADAR_COLUMNS = (
     "rain_3d_mm",
@@ -33,14 +34,27 @@ def _is_meps_stale(meps_newest_hour: "datetime | None", now: datetime) -> bool:
 
 
 def weather_data_quality(
-    radar_coverage: float, meps_newest_hour: "datetime | None", now: datetime
+    radar_coverage: dict,
+    meps_coverage: float,
+    meps_newest_hour: "datetime | None",
+    now: datetime,
 ) -> str:
     flags = []
-    if radar_coverage < MIN_RADAR_COVERAGE:
-        flags.append("partial_radar_gap")
+    if radar_coverage["3d"] < MIN_RADAR_COVERAGE:
+        flags.append("partial_radar_gap_3d")
+    if radar_coverage["7d"] < MIN_RADAR_COVERAGE:
+        flags.append("partial_radar_gap_7d")
+    if radar_coverage["14d"] < MIN_RADAR_COVERAGE:
+        flags.append("partial_radar_gap_14d")
     if _is_meps_stale(meps_newest_hour, now):
         flags.append("stale_meps")
+    elif meps_coverage < MIN_MEPS_COVERAGE:
+        flags.append("partial_meps_gap")
     return ";".join(flags) if flags else "complete"
+
+
+def _null_if_degraded(values, degraded: bool) -> list:
+    return [None if degraded or pd.isna(v) else v for v in values]
 
 
 def _nearest_join(
@@ -75,21 +89,31 @@ def refresh_weather(
     meps_joined = _nearest_join(eraldis_projected, meps_points, _MEPS_COLUMNS)
 
     result = eraldis_gdf.copy()
-    quality = weather_data_quality(radar_coverage, meps_newest_hour, now)
-    radar_degraded = radar_coverage < MIN_RADAR_COVERAGE
-    meps_stale = _is_meps_stale(meps_newest_hour, now)
+    quality = weather_data_quality(radar_coverage, meps_coverage, meps_newest_hour, now)
 
-    for col in _RADAR_COLUMNS:
-        result[col] = [
-            None if radar_degraded or pd.isna(v) else v for v in radar_joined[col]
-        ]
+    radar_degraded_3d = radar_coverage["3d"] < MIN_RADAR_COVERAGE
+    radar_degraded_7d = radar_coverage["7d"] < MIN_RADAR_COVERAGE
+    radar_degraded_14d = radar_coverage["14d"] < MIN_RADAR_COVERAGE
+    meps_degraded = (
+        _is_meps_stale(meps_newest_hour, now) or meps_coverage < MIN_MEPS_COVERAGE
+    )
+
+    result["rain_3d_mm"] = _null_if_degraded(radar_joined["rain_3d_mm"], radar_degraded_3d)
+    result["wet_hours_72h"] = _null_if_degraded(
+        radar_joined["wet_hours_72h"], radar_degraded_3d
+    )
+    result["rain_7d_mm"] = _null_if_degraded(radar_joined["rain_7d_mm"], radar_degraded_7d)
+    result["rain_14d_mm"] = _null_if_degraded(
+        radar_joined["rain_14d_mm"], radar_degraded_14d
+    )
+    result["hours_since_rain"] = _null_if_degraded(
+        radar_joined["hours_since_rain"], radar_degraded_14d
+    )
     for col in _MEPS_COLUMNS:
-        result[col] = [
-            None if meps_stale or pd.isna(v) else v for v in meps_joined[col]
-        ]
+        result[col] = _null_if_degraded(meps_joined[col], meps_degraded)
 
     result["as_of"] = now
-    result["weather_data_coverage"] = radar_coverage
+    result["weather_data_coverage"] = radar_coverage["14d"]
     result["weather_data_quality"] = quality
 
     return gpd.GeoDataFrame(result, geometry="geometry", crs=crs)

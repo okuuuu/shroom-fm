@@ -1,4 +1,5 @@
 import concurrent.futures
+import os
 import requests
 import time
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ MAX_WORKERS = 3
 _PAGE_SIZE = 2000
 _DOWNLOAD_429_MAX_ATTEMPTS = 6
 _DOWNLOAD_429_INITIAL_BACKOFF = 5.0
+_HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 
 
 def query_radar_documents(since: datetime) -> list[dict]:
@@ -60,9 +62,10 @@ def query_radar_documents(since: datetime) -> list[dict]:
                     ).astimezone(timezone.utc),
                 }
             )
-        if not data["documents"] or data.get("nextBookmark") is None:
+        next_bookmark = data.get("nextBookmark")
+        if not data["documents"] or next_bookmark is None or next_bookmark == bookmark:
             break
-        bookmark = data.get("nextBookmark")
+        bookmark = next_bookmark
     return documents
 
 
@@ -100,8 +103,16 @@ def download_radar_composite(
             sleep(backoff)
             backoff *= 2
 
+    if not response.content.startswith(_HDF5_SIGNATURE):
+        raise ValueError(
+            f"Downloaded content for document {document['id']} is not a valid HDF5 "
+            f"file (missing signature) — got {len(response.content)} bytes"
+        )
+
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(response.content)
+    tmp_path = path.with_suffix(".h5.part")
+    tmp_path.write_bytes(response.content)
+    os.replace(tmp_path, path)
     return path
 
 
@@ -119,11 +130,16 @@ def fetch_new_radar_composites(
             for i, doc in enumerate(documents)
         }
         done = 0
-        for future in concurrent.futures.as_completed(future_to_index):
-            index = future_to_index[future]
-            paths[index] = future.result()
-            done += 1
-            print(f"  downloaded {done}/{len(documents)} radar composites")
+        try:
+            for future in concurrent.futures.as_completed(future_to_index):
+                index = future_to_index[future]
+                paths[index] = future.result()
+                done += 1
+                print(f"  downloaded {done}/{len(documents)} radar composites")
+        except Exception:
+            for pending in future_to_index:
+                pending.cancel()
+            raise
     return paths
 
 
@@ -288,16 +304,22 @@ def accumulate_rainfall(
     cache_dir: Path,
     now: datetime,
     eraldis_bounds_wgs84: tuple[float, float, float, float],
-) -> tuple[gpd.GeoDataFrame, float]:
+) -> tuple[gpd.GeoDataFrame, dict[str, float]]:
     from datetime import timedelta
 
     window_start = now - timedelta(days=_RADAR_WINDOW_DAYS)
     files = cached_radar_files(cache_dir, window_start, now)
 
-    expected_slots = (_RADAR_WINDOW_DAYS * 24 * 60) // _RADAR_SLOT_MINUTES
-    coverage = len(files) / expected_slots if expected_slots else 0.0
+    cutoff_3d = now - timedelta(days=3)
+    cutoff_7d = now - timedelta(days=7)
+    cutoff_72h = now - timedelta(hours=72)
+
+    expected_slots_14d = (_RADAR_WINDOW_DAYS * 24 * 60) // _RADAR_SLOT_MINUTES
+    expected_slots_7d = (7 * 24 * 60) // _RADAR_SLOT_MINUTES
+    expected_slots_3d = (3 * 24 * 60) // _RADAR_SLOT_MINUTES
 
     if not files:
+        coverage = {"3d": 0.0, "7d": 0.0, "14d": 0.0}
         empty = gpd.GeoDataFrame(
             {
                 "row": [],
@@ -331,10 +353,9 @@ def accumulate_rainfall(
     last_wet_epoch = np.full(shape, -np.inf)
     wet_slots_72h = np.zeros(shape, dtype=int)
 
-    cutoff_3d = now - timedelta(days=3)
-    cutoff_7d = now - timedelta(days=7)
-    cutoff_72h = now - timedelta(hours=72)
     slot_hours = _RADAR_SLOT_MINUTES / 60
+    count_3d = 0
+    count_7d = 0
 
     for path in files:
         timestamp = cached_radar_timestamp(path)
@@ -353,12 +374,20 @@ def accumulate_rainfall(
         rain_14d += mm_this_slot
         if timestamp >= cutoff_7d:
             rain_7d += mm_this_slot
+            count_7d += 1
         if timestamp >= cutoff_3d:
             rain_3d += mm_this_slot
+            count_3d += 1
         wet_mask = np.nan_to_num(rate_mm_h, nan=-1.0) > 0.0
         last_wet_epoch = np.where(wet_mask, timestamp.timestamp(), last_wet_epoch)
         if timestamp >= cutoff_72h:
             wet_slots_72h += wet_mask.astype(int)
+
+    coverage = {
+        "3d": count_3d / expected_slots_3d if expected_slots_3d else 0.0,
+        "7d": count_7d / expected_slots_7d if expected_slots_7d else 0.0,
+        "14d": len(files) / expected_slots_14d if expected_slots_14d else 0.0,
+    }
 
     hours_since_rain = np.where(
         last_wet_epoch == -np.inf,

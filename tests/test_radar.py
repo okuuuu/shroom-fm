@@ -156,6 +156,38 @@ def test_query_radar_documents_terminates_on_empty_page_with_repeating_bookmark(
     assert captured_bodies[1]["bookmark"] == "cursor-A"
 
 
+def test_query_radar_documents_terminates_on_repeated_bookmark(monkeypatch):
+    # Defends against a cursor API returning the SAME bookmark on a non-empty page
+    # (a stale/reset cursor) — must not loop forever appending duplicates.
+    page = {
+        "documents": [
+            {
+                "id": 1,
+                "metadata": {"Timestamp": "2026-08-18T09:00:00.0000000+03:00"},
+                "fileMetadata": [{"id": 1}],
+            }
+        ],
+        "nextBookmark": "cursor-A",
+    }
+    call_count = [0]
+
+    class _FakeResponse:
+        def json(self):
+            return page
+
+    def fake_post_with_retry(url, *, json, timeout):
+        call_count[0] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr("shroom_fm.radar.post_with_retry", fake_post_with_retry)
+
+    result = query_radar_documents(_utc(2026, 8, 18, 6))
+
+    assert call_count[0] == 2  # 1st call: bookmark=None, gets "cursor-A" back, continues.
+    # 2nd call: bookmark="cursor-A" sent, gets "cursor-A" back again (unchanged) -> stops.
+    assert len(result) == 2
+
+
 def test_download_radar_composite_skips_if_already_cached(tmp_path, monkeypatch):
     document = {"id": 42, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
     cache_dir = tmp_path / "radar_cache"
@@ -181,7 +213,7 @@ def test_download_radar_composite_fetches_and_caches_new_file(tmp_path, monkeypa
     captured_urls = []
 
     class _FakeResponse:
-        content = b"real-h5-bytes"
+        content = b"\x89HDF\r\n\x1a\n" + b"real-h5-bytes"
 
     def fake_get_with_retry(url, timeout):
         captured_urls.append(url)
@@ -194,7 +226,7 @@ def test_download_radar_composite_fetches_and_caches_new_file(tmp_path, monkeypa
     assert captured_urls == [
         "https://avaandmed.keskkonnaportaal.ee/api/lists/active/items/43/files/1"
     ]
-    assert result.read_bytes() == b"real-h5-bytes"
+    assert result.read_bytes() == b"\x89HDF\r\n\x1a\n" + b"real-h5-bytes"
     assert result.name == "20260818T090500Z_43.h5"
 
 
@@ -203,7 +235,7 @@ def test_download_radar_composite_retries_on_429_then_succeeds(tmp_path, monkeyp
     cache_dir = tmp_path / "radar_cache"
 
     class _FakeResponse:
-        content = b"bytes"
+        content = b"\x89HDF\r\n\x1a\n" + b"bytes"
 
     class _Fake429Response:
         status_code = 429
@@ -223,7 +255,7 @@ def test_download_radar_composite_retries_on_429_then_succeeds(tmp_path, monkeyp
 
     result = download_radar_composite(document, cache_dir, sleep=sleeps.append)
 
-    assert result.read_bytes() == b"bytes"
+    assert result.read_bytes() == b"\x89HDF\r\n\x1a\n" + b"bytes"
     assert call_count[0] == 3
     assert len(sleeps) == 2
 
@@ -270,6 +302,43 @@ def test_download_radar_composite_does_not_retry_non_429_http_errors(
         download_radar_composite(document, cache_dir, sleep=lambda s: None)
 
     assert len(calls) == 1
+
+
+def test_download_radar_composite_writes_atomically_via_temp_file(tmp_path, monkeypatch):
+    document = {"id": 200, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
+    cache_dir = tmp_path / "radar_cache"
+
+    class _FakeResponse:
+        content = b"\x89HDF\r\n\x1a\n" + b"rest-of-file"
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
+    )
+
+    result = download_radar_composite(document, cache_dir)
+
+    assert result.exists()
+    assert result.read_bytes() == b"\x89HDF\r\n\x1a\n" + b"rest-of-file"
+    assert not (cache_dir / (result.stem + ".h5.part")).exists()
+
+
+def test_download_radar_composite_rejects_content_without_hdf5_signature(
+    tmp_path, monkeypatch
+):
+    document = {"id": 201, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
+    cache_dir = tmp_path / "radar_cache"
+
+    class _FakeResponse:
+        content = b"<html>not hdf5</html>"
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
+    )
+
+    with pytest.raises(ValueError):
+        download_radar_composite(document, cache_dir)
+
+    assert not (cache_dir / "20260818T090000Z_201.h5").exists()
 
 
 def test_cached_radar_timestamp_parses_filename(tmp_path):
@@ -329,7 +398,7 @@ def test_fetch_new_radar_composites_downloads_all_queried_documents(
     )
 
     class _FakeResponse:
-        content = b"bytes"
+        content = b"\x89HDF\r\n\x1a\n" + b"bytes"
 
     monkeypatch.setattr(
         "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
@@ -513,4 +582,45 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
     assert row1_col1["rain_3d_mm"] == pytest.approx(0.0)
     assert np.isnan(row1_col1["hours_since_rain"])  # never rained in the cached window
 
-    assert coverage == pytest.approx(3 / 4032)  # 3 files present of ~4032 expected in 14d
+    # All 3 files fall within the 3d/7d/14d windows (they're 10 minutes apart, well
+    # inside all three), but the expected slot counts differ per window, so the
+    # coverage ratios differ even though the numerator (3) is the same.
+    assert coverage["3d"] == pytest.approx(3 / 864)  # 3 files of ~864 expected in 3d
+    assert coverage["7d"] == pytest.approx(3 / 2016)  # 3 files of ~2016 expected in 7d
+    assert coverage["14d"] == pytest.approx(3 / 4032)  # 3 files of ~4032 expected in 14d
+
+
+def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+
+    now = _utc(2026, 8, 15, 0, 0)
+
+    # Full 5-minute-slot coverage for the trailing 3 days (864 expected slots), but
+    # only a handful of files scattered further back in days 4-14 — the 14-day
+    # aggregate should be far lower than the 3-day/7-day windows even though the
+    # 3-day/7-day windows are essentially complete.
+    slots_3d = (3 * 24 * 60) // 5
+    for i in range(slots_3d):
+        ts = now - timedelta(minutes=5 * i)
+        _write_fake_composite(
+            cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_{i}.h5",
+            rate_grid=[[0.0, 0.0], [0.0, 0.0]],
+        )
+
+    # A handful of sparse older files, days 4-14 (outside the 3d/7d windows).
+    for days_ago in (5, 8, 11, 13):
+        ts = now - timedelta(days=days_ago)
+        _write_fake_composite(
+            cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_old{days_ago}.h5",
+            rate_grid=[[0.0, 0.0], [0.0, 0.0]],
+        )
+
+    bounds = (20.0, 56.0, 30.0, 62.0)
+
+    _, coverage = accumulate_rainfall(cache_dir, now, bounds)
+
+    assert coverage["3d"] == pytest.approx(1.0)
+    assert coverage["7d"] < coverage["3d"]
+    assert coverage["14d"] < coverage["7d"]
+    assert coverage["14d"] < 0.5

@@ -86,5 +86,13 @@ def fetch_layer_annulus(
         for i in range(num_pages)
     ]
     contents = fetch_pages_concurrently(url, params_list, progress_label="road page")
-    pages = [gpd.read_file(io.BytesIO(content)) for content in contents]
-    return gpd.GeoDataFrame(pd.concat(pages, ignore_index=True), crs=pages[0].crs)
+    pages = []
+    for i, content in enumerate(contents):
+        pages.append(gpd.read_file(io.BytesIO(content)))
+        contents[i] = None
+    result = gpd.GeoDataFrame(pd.concat(pages, ignore_index=True), crs=pages[0].crs)
+    if len(result) != total:
+        raise RuntimeError(
+            f"WFS returned {len(result)} features but reported {total} matches for {typename}"
+        )
+    return result

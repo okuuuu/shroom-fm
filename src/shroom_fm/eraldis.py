@@ -40,5 +40,14 @@ def fetch_eraldis_annulus(
     contents = fetch_pages_concurrently(
         METSAREGISTER_OWS_URL, params_list, progress_label="eraldis page"
     )
-    pages = [gpd.read_file(io.BytesIO(content)) for content in contents]
-    return gpd.GeoDataFrame(pd.concat(pages, ignore_index=True), crs=pages[0].crs)
+    pages = []
+    for i, content in enumerate(contents):
+        pages.append(gpd.read_file(io.BytesIO(content)))
+        contents[i] = None
+    result = gpd.GeoDataFrame(pd.concat(pages, ignore_index=True), crs=pages[0].crs)
+    if len(result) != total:
+        raise RuntimeError(
+            f"WFS returned {len(result)} features but reported {total} matches "
+            f"for {ERALDIS_TYPENAME}"
+        )
+    return result

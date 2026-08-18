@@ -88,9 +88,10 @@ def fetch_eraldis_element(eraldis_ids: list[int]) -> pd.DataFrame:
         METSAREGISTER_OWS_URL, params_list, progress_label="composition batch"
     )
     rows = []
-    for content in contents:
+    for i, content in enumerate(contents):
         data = json.loads(content)
         rows.extend(feature["properties"] for feature in data["features"])
+        contents[i] = None
     return pd.DataFrame(rows)
 
 

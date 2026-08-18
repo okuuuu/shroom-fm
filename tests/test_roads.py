@@ -205,6 +205,25 @@ def test_fetch_layer_annulus_fetches_all_pages_and_concatenates(monkeypatch):
     assert [p["startIndex"] for p in captured_params_list] == [0, 2]
 
 
+def test_fetch_layer_annulus_raises_when_fetched_count_mismatches_total(monkeypatch):
+    monkeypatch.setattr("shroom_fm.roads._PAGE_SIZE", 2)
+    monkeypatch.setattr(
+        "shroom_fm.roads.fetch_hit_count", lambda url, params, **kw: 3
+    )
+
+    def fake_fetch_pages_concurrently(url, params_list, **kwargs):
+        return [_geojson_page(2), _geojson_page(0)]  # only 2 of reported 3
+
+    monkeypatch.setattr(
+        "shroom_fm.roads.fetch_pages_concurrently", fake_fetch_pages_concurrently
+    )
+
+    with pytest.raises(RuntimeError):
+        fetch_layer_annulus(
+            "https://example.com/wfs", "example:layer", 59.4370, 24.7536, radius_km=20.0
+        )
+
+
 def test_fetch_layer_annulus_issues_one_request_for_empty_result(monkeypatch):
     monkeypatch.setattr(
         "shroom_fm.roads.fetch_hit_count", lambda url, params, **kw: 0

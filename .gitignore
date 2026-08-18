@@ -230,3 +230,5 @@ data/ecotones.geojson
 data/roads.geojson
 data/barriers.geojson
 data/scout_candidates.geojson
+data/radar_cache/
+data/weather_eraldis.geojson

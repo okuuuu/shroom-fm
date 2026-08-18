@@ -134,6 +134,67 @@ data, not visible from synthetic test fixtures):
   Any code reading `kasvukoht_group_changed` back from the saved GeoJSON must compare against
   the strings `"True"`/`"False"` (or cast explicitly), not `is True`/`is False`.
 
+## Weather refresh (standalone, not part of the 9-step pipeline)
+
+`uv run python scripts/refresh_weather.py` ingests KAIA radar precipitation composites
+(5-minute HDF5/ODIM files, rolling 14-day cache in `data/radar_cache/`) and MET Norway's
+MEPS/MET-Nordic hourly analysis grid (rolling 3-day window, no local cache — refetched
+each run) to produce `data/weather_eraldis.geojson`: per-`eraldis` `rain_3d_mm`/
+`rain_7d_mm`/`rain_14d_mm`, `hours_since_rain`, `wet_hours_72h`, `temp_mean_3d`/
+`temp_night_mean_3d`, `rh_mean_3d`/`rh_night_mean_3d`, plus `as_of`/
+`weather_data_coverage`/`weather_data_quality` columns. Unlike the rest of the pipeline
+this is time-varying and meant to be re-run on demand (e.g. before a scouting trip), not
+as part of `main.py`'s 9-step sequence. `FruitingScore` (combining these features into a
+per-species/date score and wiring into `ScoutScore`) is not yet built — this step only
+produces the raw weather features.
+
+**Real first-ever (cold-start) run, verified live against production KAIA/MET Norway
+servers on 2026-08-18:** a warm/mostly-populated-cache invocation of
+`scripts/refresh_weather.py` itself completes in 3-4 minutes (measured: 3m24s and 4m4s
+across two runs) and produces `data/weather_eraldis.geojson` with all 262,054 real
+`eraldis` stands scored, `weather_data_quality: {'complete': 262054}`. But getting the
+`data/radar_cache/` warm enough to reach that "complete" label for a brand-new deployment
+took **well over 30 minutes of real wall-clock time** — likely multiple hours in the worst
+case — not because of the per-file bbox-slicing (which works as designed and keeps each
+file's own processing cheap), but because KAIA's document-query and file-download
+endpoints both enforce a real, fairly aggressive rate limit (repeated live `HTTP 429 Too
+Many Requests`) once a client requests on the order of ~2000+ documents/files in a short
+burst. Two real bugs surfaced and were fixed live during this verification (both already
+committed, not introduced by this step): (1) the real KAIA API never returns
+`nextBookmark: null` to signal pagination end — it echoes the same non-null bookmark
+forever with an empty `documents` list once exhausted, contradicting the null-bookmark
+termination Task 1 originally shipped and regression-tested against a synthetic mock; (2)
+`download_radar_composite` now retries `HTTP 429` locally with exponential backoff (the
+shared `retry.py` deliberately excludes 4xx by design) and `MAX_WORKERS` was reduced from
+6 to 3 to reduce how often the limit is hit in the first place. Even with both fixes, a
+genuinely cold cache (this environment's very first run, starting from zero cached files)
+needed several separate `fetch_new_radar_composites` passes and manual pauses across
+multiple hours of real elapsed time to climb from 0 to ~3,420 of the ~4,110 documents in
+the 14-day window (84.5% overall raw coverage) before a run's `weather_data_coverage`
+(currently 0.849) cleared the `MIN_RADAR_COVERAGE = 0.7` threshold used for the `quality`
+label.
+
+**Known real-data quirk found via this live verification, not caught by unit tests:**
+even at 84.5% *overall* 14-day coverage, the *most recent* 1-3 days remained far sparser
+(12-20%) than the aggregate figure suggests, because KAIA returns documents in
+chronological order and a rate-limited, worker-pool-bounded download loop naturally
+finishes older (earlier-submitted) files before newer ones — so recency lags overall
+completeness during a cold backfill. In this run's real output, `rain_3d_mm` and
+`rain_7d_mm` came back as **exactly 0.0 for all 262,054 stands** (zero variance) while
+`rain_14d_mm` (drawing on the better-sampled older two-thirds of the window) was nonzero
+for ~3.5% of stands (up to 3.24mm). `temp_mean_3d`/`temp_night_mean_3d` (15-17°C) and
+`rh_mean_3d`/`rh_night_mean_3d` (70-85%) both looked physically plausible and varied
+normally across stands — only the *rain* features were affected, since they alone depend
+on the most-recent, most rate-limited portion of the radar window. This uniform-zero rain
+result is honestly ambiguous: it may reflect a genuine short dry spell in this specific
+2026-08 window, or it may still be an artifact of incomplete recent-day radar sampling —
+the current data does not let us tell these apart with confidence, and this should be
+re-checked once a routine (non-cold-start) run has a fully warm cache. `weather_data_quality`
+does not currently distinguish "overall coverage is fine but recency is poor" from true
+completeness — a possible future follow-up would be a separate recency-specific coverage
+check (e.g. over just the trailing 3-day window) rather than relying solely on the
+14-day-aggregate `MIN_RADAR_COVERAGE` threshold.
+
 ## Planned architecture
 
 Data pipeline (this is the long-term target shape; see "Running the full pipeline" above

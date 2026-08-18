@@ -1,10 +1,11 @@
 import io
+import math
 
 import geopandas as gpd
 import pandas as pd
 
+from shroom_fm.concurrent_fetch import fetch_hit_count, fetch_pages_concurrently
 from shroom_fm.cql import annulus_filter
-from shroom_fm.retry import get_with_retry
 
 CAR_CLASS_HIGH_CONFIDENCE = "HIGH_CONFIDENCE"
 CAR_CLASS_NORMAL = "NORMAL"
@@ -69,27 +70,21 @@ def fetch_layer_annulus(
     inner_radius_km: float = 0.0,
 ) -> gpd.GeoDataFrame:
     cql_filter = annulus_filter(GEOMETRY_ATTR, lat, lon, radius_km, inner_radius_km)
-    pages = []
-    start_index = 0
-    while True:
-        response = get_with_retry(
-            url,
-            params={
-                "service": "WFS",
-                "version": "2.0.0",
-                "request": "GetFeature",
-                "typeNames": typename,
-                "outputFormat": "application/json",
-                "srsName": _ETAK_OUTPUT_CRS,
-                "CQL_FILTER": cql_filter,
-                "startIndex": start_index,
-                "count": _PAGE_SIZE,
-            },
-            timeout=30,
-        )
-        page = gpd.read_file(io.BytesIO(response.content))
-        pages.append(page)
-        if len(page) < _PAGE_SIZE:
-            break
-        start_index += _PAGE_SIZE
+    base_params = {
+        "service": "WFS",
+        "version": "2.0.0",
+        "request": "GetFeature",
+        "typeNames": typename,
+        "outputFormat": "application/json",
+        "srsName": _ETAK_OUTPUT_CRS,
+        "CQL_FILTER": cql_filter,
+    }
+    total = fetch_hit_count(url, base_params)
+    num_pages = max(1, math.ceil(total / _PAGE_SIZE))
+    params_list = [
+        {**base_params, "startIndex": i * _PAGE_SIZE, "count": _PAGE_SIZE}
+        for i in range(num_pages)
+    ]
+    contents = fetch_pages_concurrently(url, params_list, progress_label="road page")
+    pages = [gpd.read_file(io.BytesIO(content)) for content in contents]
     return gpd.GeoDataFrame(pd.concat(pages, ignore_index=True), crs=pages[0].crs)

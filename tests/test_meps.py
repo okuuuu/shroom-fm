@@ -50,7 +50,7 @@ def test_meps_dataset_to_points_converts_units_and_flattens_grid():
     assert len(points) == 4
     assert points["temp_c"].iloc[0] == pytest.approx(10.0)
     assert points["rh_pct"].iloc[0] == pytest.approx(80.0)
-    assert points.crs is not None
+    assert points.crs == "EPSG:3301"
 
 
 def test_accumulate_meps_features_computes_day_night_means(monkeypatch):
@@ -76,3 +76,62 @@ def test_accumulate_meps_features_computes_day_night_means(monkeypatch):
     assert row0["temp_mean_3d"] == pytest.approx((20.0 + 10.0) / 2)
     assert row0["temp_night_mean_3d"] == pytest.approx(10.0)
     assert row0["rh_night_mean_3d"] == pytest.approx(90.0)
+
+
+class _MockDataset:
+    """Mock xarray Dataset that bypasses coordinate slicing for testing."""
+    def __init__(self, dataset):
+        self._ds = dataset
+
+    def __getitem__(self, key):
+        return self._ds[key]
+
+    def sel(self, **kwargs):
+        """Pretend slice returns full dataset (avoids coordinate mismatch issues in tests)."""
+        return self._ds
+
+    def load(self):
+        return self._ds.load()
+
+    def close(self):
+        self._ds.close()
+
+    @property
+    def sizes(self):
+        return self._ds.sizes
+
+
+def test_fetch_meps_hourly_rejects_latest_dataset_with_mismatched_time(monkeypatch):
+    from shroom_fm.meps import MEPS_LATEST_URL, fetch_meps_hourly
+
+    requested_hour = _utc(2026, 8, 15, 6)
+    wrong_time_dataset = _fake_dataset(temp_k=280.0, rh_frac=0.5)  # time is 2026-08-15T00:00:00
+
+    def fake_open_dataset(url):
+        if url == MEPS_LATEST_URL:
+            return _MockDataset(wrong_time_dataset)
+        raise OSError("archive file not found")
+
+    monkeypatch.setattr("shroom_fm.meps.xr.open_dataset", fake_open_dataset)
+
+    result = fetch_meps_hourly(requested_hour, (24.0, 59.0, 25.0, 60.0))
+
+    assert result is None
+
+
+def test_fetch_meps_hourly_accepts_latest_dataset_with_matching_time(monkeypatch):
+    from shroom_fm.meps import MEPS_LATEST_URL, fetch_meps_hourly
+
+    requested_hour = _utc(2026, 8, 15, 0)  # matches _fake_dataset's hardcoded time
+    matching_dataset = _fake_dataset(temp_k=280.0, rh_frac=0.5)
+
+    def fake_open_dataset(url):
+        if url == MEPS_LATEST_URL:
+            return _MockDataset(matching_dataset)
+        raise OSError("archive file not found")
+
+    monkeypatch.setattr("shroom_fm.meps.xr.open_dataset", fake_open_dataset)
+
+    result = fetch_meps_hourly(requested_hour, (24.0, 59.0, 25.0, 60.0))
+
+    assert result is not None

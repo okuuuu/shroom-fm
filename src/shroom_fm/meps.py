@@ -36,12 +36,18 @@ def fetch_meps_hourly(
     x_slice = slice(min(xs), max(xs))
     y_slice = slice(min(ys), max(ys))
 
-    for url in (meps_hourly_url(hour), MEPS_LATEST_URL):
+    expected_time = np.datetime64(pd.Timestamp(hour).tz_localize(None))
+
+    for url, verify_time in ((meps_hourly_url(hour), False), (MEPS_LATEST_URL, True)):
         try:
             dataset = xr.open_dataset(url)
         except OSError:
             continue
         try:
+            if verify_time:
+                actual_time = dataset["time"].values[0]
+                if actual_time != expected_time:
+                    continue
             subset = dataset.sel(x=x_slice, y=y_slice)
             if subset.sizes.get("x", 0) == 0 or subset.sizes.get("y", 0) == 0:
                 continue
@@ -56,11 +62,17 @@ def meps_dataset_to_points(dataset: "xr.Dataset") -> "gpd.GeoDataFrame":
     xx, yy = np.meshgrid(dataset["x"].values, dataset["y"].values)
     temp_c = dataset["air_temperature_2m"].isel(time=0).values - 273.15
     rh_pct = dataset["relative_humidity_2m"].isel(time=0).values * 100.0
-    return gpd.GeoDataFrame(
-        {"temp_c": temp_c.ravel(), "rh_pct": rh_pct.ravel()},
+    points = gpd.GeoDataFrame(
+        {
+            "x": xx.ravel(),
+            "y": yy.ravel(),
+            "temp_c": temp_c.ravel(),
+            "rh_pct": rh_pct.ravel(),
+        },
         geometry=gpd.points_from_xy(xx.ravel(), yy.ravel()),
         crs=lcc_crs,
     )
+    return points.to_crs("EPSG:3301")
 
 
 def _is_night(hour_utc: datetime) -> bool:
@@ -89,7 +101,6 @@ def accumulate_meps_features(
         points = meps_dataset_to_points(dataset)
         points["hour"] = hour
         points["is_night"] = _is_night(hour)
-        points["point_id"] = range(len(points))
         all_points.append(points)
 
     coverage = fetched_count / _MEPS_WINDOW_HOURS
@@ -108,8 +119,8 @@ def accumulate_meps_features(
         return empty, coverage, newest_available
 
     combined = pd.concat(all_points, ignore_index=True)
-    grouped = combined.groupby("point_id")
-    night = combined[combined["is_night"]].groupby("point_id")
+    grouped = combined.groupby(["x", "y"])
+    night = combined[combined["is_night"]].groupby(["x", "y"])
 
     result = grouped[["geometry"]].first()
     result["temp_mean_3d"] = grouped["temp_c"].mean()
@@ -118,5 +129,4 @@ def accumulate_meps_features(
     result["rh_night_mean_3d"] = night["rh_pct"].mean()
 
     result = gpd.GeoDataFrame(result, geometry="geometry", crs=combined.crs)
-    result = result.to_crs("EPSG:3301")
     return result, coverage, newest_available

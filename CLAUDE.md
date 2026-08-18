@@ -10,7 +10,7 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-7 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+**Status: MVP steps 1-8 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
 `config.py` (home location loading), `eraldis.py` (server-side CQL annulus download via
 `fetch_eraldis_annulus`), `cql.py` (shared `estonian_grid_point`/`annulus_filter` helpers
 that build the `DWITHIN`/`BEYOND` CQL_FILTER string used by both the eraldis and roads
@@ -24,23 +24,61 @@ interiors and `EcotoneScore` for adjacent-pair boundaries, for the five target s
 kitsemampel, chanterelle, aspen bolete, birch bolete, porcini — from host tree composition
 and kasvukoht site-type suitability, kept as two distinct scores rather than one combined
 `HabitatScore`), `roads.py` (ETAK road/barrier WFS fetch, `car_class` classification of road
-segments, and barrier-snap exclusion of segments near a permanently-closed barrier), and
+segments, and barrier-snap exclusion of segments near a permanently-closed barrier),
 `access.py` (per-eraldis `AccessScore` from nearest-road distances, additive-only onto
-`data/eraldis.geojson`); `scripts/get_capabilities.py`, `scripts/download_eraldis.py`,
-`scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, `scripts/score_ecotones.py`,
-`scripts/score_habitat.py`, `scripts/score_ecotone_habitat.py` (the last two must run in that
-order — ecotone habitat scoring depends on stands already being scored),
-`scripts/download_roads.py` (its `RADIUS_KM`/`INNER_RADIUS_KM` are set to 38.0/18.0, matching
-`download_eraldis.py`, so `data/roads.geojson` covers the same 18-38km annulus as
-`data/eraldis.geojson` rather than a mismatched disc), and `scripts/score_access.py` are
-runnable. Of the Access/Eligibility layer discussed for step 8+, the road-access piece has
-now landed as a standalone `AccessScore` (see
-`docs/superpowers/specs/2026-08-17-road-access-design.md`) — it is
-additive-only onto `data/eraldis.geojson` and does not modify `StandHabitatScore`/
-`EcotoneScore`. The rest of step 8+ (`ScoutScore` itself — combining `EcotoneScore` with
-weather, observation history, landscape-mosaic diversity, and `AccessScore` — and exporting
-top N) is not yet built. This file documents the target architecture so implementation stays
-consistent; update it as more of the pipeline lands.
+`data/eraldis.geojson`), and `scout.py` (`ScoutScore` v0 — joins each ecotone to its two
+stands' `AccessScore`, taking `access_modifier = max(access_score_a, access_score_b)` and
+splitting candidates per species into a `ranked` tier, `scout_score = ecotone_score ×
+access_modifier`, and a `remote_high_value` tier for ecologically-strong candidates the v1
+access distance-proxy couldn't confirm a nearby road for — never a fabricated `0` or floor,
+see `docs/superpowers/specs/2026-08-17-scout-candidates-export-design.md`). All scripts are
+runnable — see "Running the full pipeline" below for the exact command sequence and
+dependency order. The road-access piece of the Access/Eligibility layer has landed as
+`AccessScore` (see `docs/superpowers/specs/2026-08-17-road-access-design.md`) — additive-only
+onto `data/eraldis.geojson`, never modifying `StandHabitatScore`/`EcotoneScore`. MVP step 8
+(export top N → GeoJSON) has landed as `ScoutScore` v0 + `scripts/export_scout_candidates.py`
+→ `data/scout_candidates.geojson`. Still deferred: `FruitingScore` (weather), personal
+observation history, and a landscape-mosaic diversity bonus — none exist yet, and `ScoutScore`
+v0 simply omits them from its formula rather than faking neutral placeholder values for them.
+This file documents the target architecture so implementation stays consistent; update it as
+more of the pipeline lands.
+
+## Running the full pipeline
+
+Unit tests (fast, no network): `uv run pytest tests/`
+
+Real pipeline (hits live WFS endpoints; needs `config.toml` with home coordinates — copy
+`config.example.toml` and fill in `home_lat`/`home_lon`). Steps 1-6 and step 7 are
+independent of each other (either branch can run first, or in parallel); step 8 needs both
+branches done; step 9 needs everything upstream:
+
+1. `uv run python scripts/download_eraldis.py` — Metsaregister stands within home radius →
+   `data/eraldis.geojson` (`RADIUS_KM`/`INNER_RADIUS_KM` script constants; currently a
+   38km/18km annulus)
+2. `uv run python scripts/enrich_eraldis.py` — join tree composition + kasvukoht/puuliik
+   labels onto `data/eraldis.geojson`
+3. `uv run python scripts/compute_adjacency.py` — find adjacent stand pairs →
+   `data/adjacency.geojson`
+4. `uv run python scripts/score_ecotones.py` — score boundary contrast →
+   `data/ecotones.geojson`
+5. `uv run python scripts/score_habitat.py` — `StandHabitatScore` per species onto
+   `data/eraldis.geojson` (must run before step 6)
+6. `uv run python scripts/score_ecotone_habitat.py` — `EcotoneScore` per species onto
+   `data/ecotones.geojson` (depends on step 5's `stand_habitat_score_*` columns already
+   existing)
+7. `uv run python scripts/download_roads.py` — ETAK roads/barriers within the same home
+   radius → `data/roads.geojson`/`data/barriers.geojson` (only needs home coordinates, not
+   steps 1-6)
+8. `uv run python scripts/score_access.py` — `AccessScore` onto `data/eraldis.geojson`
+   (needs steps 1 and 7 already done)
+9. `uv run python scripts/export_scout_candidates.py` — top-5-per-species `ScoutScore` v0
+   shortlist → `data/scout_candidates.geojson` (needs steps 5, 6, and 8 already done)
+
+At real scale (~65k stands, ~50k road segments within a 20km-wide annulus around Tallinn):
+step 1 is fast (CQL server-side filtering), steps 3-6 are fast (local computation), step 7
+takes several minutes (paginated WFS fetch, ETAK's road network is dense), step 8 takes well
+under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step
+9 is near-instant.
 
 **Known real-data quirks** (found only via live verification against real Metsaregister
 data, not visible from synthetic test fixtures):
@@ -82,7 +120,11 @@ data, not visible from synthetic test fixtures):
 
 ## Planned architecture
 
-Data pipeline (build first, as a CLI):
+Data pipeline (this is the long-term target shape; see "Running the full pipeline" above
+for the actual current script sequence — `habitat`/`ecotone`/`access` scores and the
+`ScoutScore` v0 export are real today, `FruitingScore` and observation history are not yet
+built, and this diagram omits the ETAK roads/barriers WFS that `access` score now depends on
+alongside Metsaregister):
 
 ```
 Metsaregister WFS (GeoServer OWS)
@@ -106,7 +148,7 @@ Metsaregister WFS (GeoServer OWS)
               + FruitingScore(t)  — rainfall/temp history, recency of rain
               + observation history (your own logged finds)
               ▼
-        CurrentScore
+        ScoutScore
               │
               ▼
         GeoJSON export → QGIS / map viewer

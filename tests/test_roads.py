@@ -6,6 +6,7 @@ from shroom_fm.roads import (
     CAR_CLASS_NORMAL,
     CAR_CLASS_WALK_ONLY,
     classify_car_class,
+    fetch_layer_annulus,
 )
 
 
@@ -151,3 +152,15 @@ def test_exclude_barrier_blocked_segments_keeps_segment_beyond_snap_distance():
     result = exclude_barrier_blocked_segments(roads_gdf, barriers_gdf)
 
     assert list(result["name"]) == ["far"]
+
+
+def test_fetch_layer_annulus_raises_when_inner_radius_not_less_than_outer():
+    with pytest.raises(ValueError):
+        fetch_layer_annulus(
+            "https://example.com/wfs",
+            "example:layer",
+            59.4370,
+            24.7536,
+            radius_km=20.0,
+            inner_radius_km=20.0,
+        )

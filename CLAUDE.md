@@ -11,13 +11,15 @@ then layers recent weather on top to produce a current, ranked shortlist of plac
 scouting — instead of manually clicking around the Metsaregister web map.
 
 **Status: MVP steps 1-7 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
-`config.py` (home location loading), `eraldis.py` (bbox download + radius filtering),
-`enrich.py` (joins tree composition from `eraldis_element` and resolves `kasvukoht`/`puuliik`
-classifier labels), `adjacency.py` (computes which stands are meaningfully adjacent —
-`touching` or `near_gap`), `ecotone.py` (scores every adjacent pair by species
-composition contrast, kasvukoht site-type/moisture contrast, development-class age
-contrast, and drainage change — all continuous/unfiltered — and buffers the boundary into a
-scoutable microtype polygon), `habitat.py` (per-species `StandHabitatScore` for stand
+`config.py` (home location loading), `eraldis.py` (server-side CQL annulus download via
+`fetch_eraldis_annulus`), `cql.py` (shared `estonian_grid_point`/`annulus_filter` helpers
+that build the `DWITHIN`/`BEYOND` CQL_FILTER string used by both the eraldis and roads
+annulus fetches), `enrich.py` (joins tree composition from `eraldis_element` and resolves
+`kasvukoht`/`puuliik` classifier labels), `adjacency.py` (computes which stands are
+meaningfully adjacent — `touching` or `near_gap`), `ecotone.py` (scores every adjacent pair
+by species composition contrast, kasvukoht site-type/moisture contrast, development-class
+age contrast, and drainage change — all continuous/unfiltered — and buffers the boundary
+into a scoutable microtype polygon), `habitat.py` (per-species `StandHabitatScore` for stand
 interiors and `EcotoneScore` for adjacent-pair boundaries, for the five target species —
 kitsemampel, chanterelle, aspen bolete, birch bolete, porcini — from host tree composition
 and kasvukoht site-type suitability, kept as two distinct scores rather than one combined
@@ -28,9 +30,12 @@ segments, and barrier-snap exclusion of segments near a permanently-closed barri
 `scripts/enrich_eraldis.py`, `scripts/compute_adjacency.py`, `scripts/score_ecotones.py`,
 `scripts/score_habitat.py`, `scripts/score_ecotone_habitat.py` (the last two must run in that
 order — ecotone habitat scoring depends on stands already being scored),
-`scripts/download_roads.py`, and `scripts/score_access.py` are runnable. Of the Access/
-Eligibility layer discussed for step 8+, the road-access piece has now landed as a standalone
-`AccessScore` (see `docs/superpowers/specs/2026-08-17-road-access-design.md`) — it is
+`scripts/download_roads.py` (its `RADIUS_KM`/`INNER_RADIUS_KM` are set to 38.0/18.0, matching
+`download_eraldis.py`, so `data/roads.geojson` covers the same 18-38km annulus as
+`data/eraldis.geojson` rather than a mismatched disc), and `scripts/score_access.py` are
+runnable. Of the Access/Eligibility layer discussed for step 8+, the road-access piece has
+now landed as a standalone `AccessScore` (see
+`docs/superpowers/specs/2026-08-17-road-access-design.md`) — it is
 additive-only onto `data/eraldis.geojson` and does not modify `StandHabitatScore`/
 `EcotoneScore`. The rest of step 8+ (`ScoutScore` itself — combining `EcotoneScore` with
 weather, observation history, landscape-mosaic diversity, and `AccessScore` — and exporting
@@ -42,17 +47,19 @@ data, not visible from synthetic test fixtures):
 - ETAK's WFS (`etak:e_501_tee_j` and presumably other ETAK layers) behaves differently from
   Metsaregister's WFS in two ways, both confirmed live 2026-08-17: (1) it only allows
   `srsName=EPSG:3301` for output geometry on this layer — `EPSG:4326` is rejected with an
-  `ows:ExceptionReport`; (2) its `bbox` GetFeature parameter enforces the EPSG:4326 URN's
-  strict authority-defined axis order (**lat, lon** — not the "GIS convention" lon,lat that
-  Metsaregister's WFS accepts), confirmed by testing both orders directly against the live
-  server. Separately, `owslib`'s `WebFeatureService.getfeature()` silently re-serializes any
-  bbox tuple it's given back into lon,lat order on the wire regardless of the order passed
-  in — confirmed by inspecting the actual outgoing request URL — so an axis-order fix cannot
-  be applied through `owslib` at all for this endpoint. `roads.py`'s `fetch_layer_bbox`
-  bypasses `owslib` and builds the GetFeature request with `requests` directly (same
-  workaround pattern as `enrich.py`'s `fetch_eraldis_element`, which bypasses `owslib` for a
-  different limitation — no CQL support), swaps the bbox to `(miny, minx, maxy, maxx, urn)`,
-  and requests `srsName=EPSG:3301`.
+  `ows:ExceptionReport` — still true today and directly relied on in `roads.py`'s
+  `fetch_layer_annulus` via its `_ETAK_OUTPUT_CRS` constant; (2) its `bbox` GetFeature
+  parameter enforces the EPSG:4326 URN's strict authority-defined axis order (**lat, lon** —
+  not the "GIS convention" lon,lat that Metsaregister's WFS accepts), confirmed by testing
+  both orders directly against the live server. Separately, `owslib`'s
+  `WebFeatureService.getfeature()` silently re-serializes any bbox tuple it's given back into
+  lon,lat order on the wire regardless of the order passed in — confirmed by inspecting the
+  actual outgoing request URL — so an axis-order fix cannot be applied through `owslib` at
+  all for this endpoint. (Historical: (2) and the owslib bypass applied to the old bbox-based
+  `fetch_layer_bbox`, since removed — no longer relevant since both the eraldis and roads
+  fetches now use `CQL_FILTER` instead of the `bbox` parameter. Kept here since the
+  underlying axis-order/owslib facts about ETAK's WFS remain true and could matter again if a
+  bbox-based fetch is ever needed there.)
 - A composition entry's `osakaal` (share) can be `NaN` for understory/undergrowth layers
   (`rinne_kood: "A"`) — the registry doesn't measure a stocking share for undergrowth. Around
   15% of real stands have at least one such entry. Any code summing `osakaal` across a

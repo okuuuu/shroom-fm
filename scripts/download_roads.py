@@ -32,6 +32,8 @@ def main() -> None:
         ETAK_WFS_URL, BARRIER_TYPENAME, home_lat, home_lon, RADIUS_KM, INNER_RADIUS_KM
     )
 
+    # roads/barriers are already in EPSG:3301 (ETAK's required fetch_layer_annulus output
+    # CRS), which is what BARRIER_SNAP_M's metric distance check needs.
     roads = exclude_barrier_blocked_segments(roads, barriers)
     roads = roads.to_crs(WGS84_CRS)
     barriers = barriers.to_crs(WGS84_CRS)

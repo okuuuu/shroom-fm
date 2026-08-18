@@ -1,0 +1,78 @@
+from datetime import datetime, timezone
+
+import numpy as np
+import pytest
+import xarray as xr
+
+from shroom_fm.meps import (
+    accumulate_meps_features,
+    meps_dataset_to_points,
+    meps_hourly_url,
+)
+
+
+def _utc(*args):
+    return datetime(*args, tzinfo=timezone.utc)
+
+
+def _fake_dataset(temp_k: float, rh_frac: float) -> xr.Dataset:
+    # Tiny 2x2 grid in the real LCC projection's coordinate space, centered near
+    # Estonia's real LCC x/y (from the live-verified projection_lcc parameters).
+    x = np.array([300000.0, 301000.0])
+    y = np.array([700000.0, 701000.0])
+    temp = np.full((1, 2, 2), temp_k, dtype=np.float32)
+    rh = np.full((1, 2, 2), rh_frac, dtype=np.float32)
+    lon, lat = np.meshgrid([24.7, 24.8], [59.4, 59.5])
+    return xr.Dataset(
+        {
+            "air_temperature_2m": (("time", "y", "x"), temp),
+            "relative_humidity_2m": (("time", "y", "x"), rh),
+            "latitude": (("y", "x"), lat),
+            "longitude": (("y", "x"), lon),
+        },
+        coords={"time": [np.datetime64("2026-08-15T00:00:00")], "y": y, "x": x},
+    )
+
+
+def test_meps_hourly_url_builds_archive_path():
+    url = meps_hourly_url(_utc(2026, 8, 15, 6))
+    assert url == (
+        "https://thredds.met.no/thredds/dodsC/metpparchive/2026/08/15/"
+        "met_analysis_1_0km_nordic_20260815T06Z.nc"
+    )
+
+
+def test_meps_dataset_to_points_converts_units_and_flattens_grid():
+    dataset = _fake_dataset(temp_k=283.15, rh_frac=0.8)
+
+    points = meps_dataset_to_points(dataset)
+
+    assert len(points) == 4
+    assert points["temp_c"].iloc[0] == pytest.approx(10.0)
+    assert points["rh_pct"].iloc[0] == pytest.approx(80.0)
+    assert points.crs is not None
+
+
+def test_accumulate_meps_features_computes_day_night_means(monkeypatch):
+    # 2 fake hours: one clearly "day" (noon local), one clearly "night" (02:00 local)
+    fetched = {}
+
+    def fake_fetch(hour, bbox):
+        if hour == _utc(2026, 8, 14, 9):  # 12:00 EEST — day
+            return _fake_dataset(temp_k=293.15, rh_frac=0.5)  # 20C
+        if hour == _utc(2026, 8, 14, 23):  # 02:00 EEST next day — night
+            return _fake_dataset(temp_k=283.15, rh_frac=0.9)  # 10C
+        return None
+
+    monkeypatch.setattr("shroom_fm.meps.fetch_meps_hourly", fake_fetch)
+
+    now = _utc(2026, 8, 15, 0)  # only these 2 fake hours will resolve; rest are gaps
+    bbox = (24.0, 59.0, 25.0, 60.0)
+
+    points, coverage, newest = accumulate_meps_features(now, bbox)
+
+    assert coverage == pytest.approx(2 / 72)
+    row0 = points.iloc[0]
+    assert row0["temp_mean_3d"] == pytest.approx((20.0 + 10.0) / 2)
+    assert row0["temp_night_mean_3d"] == pytest.approx(10.0)
+    assert row0["rh_night_mean_3d"] == pytest.approx(90.0)

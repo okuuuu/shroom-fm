@@ -65,6 +65,45 @@ def test_query_radar_documents_paginates_via_bookmark(monkeypatch):
     assert captured_bodies[1]["bookmark"] == "page2"
 
 
+def test_query_radar_documents_terminates_on_null_bookmark_even_if_page_is_full(monkeypatch):
+    """Regression test: pagination must terminate when nextBookmark is None,
+    even if the final page has exactly _PAGE_SIZE documents."""
+    page_with_exact_page_size = {
+        "documents": [
+            {
+                "id": i,
+                "metadata": {"Timestamp": "2026-08-18T09:00:00.0000000+03:00"},
+                "fileMetadata": [{"id": 1}],
+            }
+            for i in range(2000)
+        ],
+        "nextBookmark": None,
+    }
+    captured_bodies = []
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    def fake_post_with_retry(url, *, json, timeout):
+        captured_bodies.append(json)
+        return _FakeResponse(page_with_exact_page_size)
+
+    monkeypatch.setattr("shroom_fm.radar.post_with_retry", fake_post_with_retry)
+
+    result = query_radar_documents(_utc(2026, 8, 18, 6))
+
+    # Should have exactly 2000 documents, not re-fetched infinitely
+    assert len(result) == 2000
+    # Should have made exactly 1 request, not re-fetching
+    assert len(captured_bodies) == 1
+    # First request should not have a bookmark
+    assert "bookmark" not in captured_bodies[0]
+
+
 def test_download_radar_composite_skips_if_already_cached(tmp_path, monkeypatch):
     document = {"id": 42, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0, 0)}
     cache_dir = tmp_path / "radar_cache"
@@ -87,16 +126,22 @@ def test_download_radar_composite_skips_if_already_cached(tmp_path, monkeypatch)
 def test_download_radar_composite_fetches_and_caches_new_file(tmp_path, monkeypatch):
     document = {"id": 43, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 5, 0)}
     cache_dir = tmp_path / "radar_cache"
+    captured_urls = []
 
     class _FakeResponse:
         content = b"real-h5-bytes"
 
-    monkeypatch.setattr(
-        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
-    )
+    def fake_get_with_retry(url, timeout):
+        captured_urls.append(url)
+        return _FakeResponse()
+
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", fake_get_with_retry)
 
     result = download_radar_composite(document, cache_dir)
 
+    assert captured_urls == [
+        "https://avaandmed.keskkonnaportaal.ee/api/lists/active/items/43/files/1"
+    ]
     assert result.read_bytes() == b"real-h5-bytes"
     assert result.name == "20260818T090500Z_43.h5"
 

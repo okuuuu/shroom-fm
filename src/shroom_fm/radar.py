@@ -51,9 +51,9 @@ def query_radar_documents(since: datetime) -> list[dict]:
                     ).astimezone(timezone.utc),
                 }
             )
-        if len(data["documents"]) < _PAGE_SIZE:
+        bookmark = data.get("nextBookmark")
+        if bookmark is None:
             break
-        bookmark = data["nextBookmark"]
     return documents
 
 

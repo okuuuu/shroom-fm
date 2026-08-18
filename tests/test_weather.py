@@ -178,3 +178,55 @@ def test_refresh_weather_nulls_meps_columns_when_stale(monkeypatch, tmp_path):
     assert result.loc[0, "rh_night_mean_3d"] is None
     assert result.loc[0, "rain_3d_mm"] == pytest.approx(5.0)  # radar unaffected
     assert result.loc[0, "weather_data_quality"] == "stale_meps"
+
+
+def test_refresh_weather_nulls_all_columns_when_both_degraded(monkeypatch, tmp_path):
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]}, geometry=[Point(24.0, 59.0)], crs="EPSG:4326"
+    )
+    now = _utc(2026, 8, 18, 12)
+
+    radar_points = gpd.GeoDataFrame(
+        {
+            "rain_3d_mm": [5.0],
+            "rain_7d_mm": [10.0],
+            "rain_14d_mm": [20.0],
+            "hours_since_rain": [3.0],
+            "wet_hours_72h": [1.0],
+        },
+        geometry=[Point(500000, 6500000)],
+        crs="EPSG:3301",
+    )
+    meps_points = gpd.GeoDataFrame(
+        {
+            "temp_mean_3d": [15.0],
+            "temp_night_mean_3d": [10.0],
+            "rh_mean_3d": [70.0],
+            "rh_night_mean_3d": [85.0],
+        },
+        geometry=[Point(500000, 6500000)],
+        crs="EPSG:3301",
+    )
+
+    monkeypatch.setattr(
+        "shroom_fm.weather.accumulate_rainfall",
+        lambda cache_dir, now_, bounds: (radar_points, 0.2),  # below threshold
+    )
+    monkeypatch.setattr(
+        "shroom_fm.weather.accumulate_meps_features",
+        # 10h old — beyond MAX_MEPS_STALENESS_HOURS (6)
+        lambda now_, bounds: (meps_points, 0.9, now_ - timedelta(hours=10)),
+    )
+
+    result = refresh_weather(eraldis_gdf, tmp_path / "radar_cache", now)
+
+    assert result.loc[0, "rain_3d_mm"] is None
+    assert result.loc[0, "rain_7d_mm"] is None
+    assert result.loc[0, "rain_14d_mm"] is None
+    assert result.loc[0, "hours_since_rain"] is None
+    assert result.loc[0, "wet_hours_72h"] is None
+    assert result.loc[0, "temp_mean_3d"] is None
+    assert result.loc[0, "temp_night_mean_3d"] is None
+    assert result.loc[0, "rh_mean_3d"] is None
+    assert result.loc[0, "rh_night_mean_3d"] is None
+    assert result.loc[0, "weather_data_quality"] == "partial_radar_gap;stale_meps"

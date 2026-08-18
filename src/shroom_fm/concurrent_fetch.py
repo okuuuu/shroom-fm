@@ -1,5 +1,5 @@
 import concurrent.futures
-from xml.etree import ElementTree
+import json
 
 from shroom_fm.retry import get_with_retry
 
@@ -8,10 +8,10 @@ MAX_WORKERS = 6
 
 def fetch_hit_count(url: str, base_params: dict, *, timeout: int = 30) -> int:
     response = get_with_retry(
-        url, params={**base_params, "resultType": "hits"}, timeout=timeout
+        url, params={**base_params, "count": 1, "startIndex": 0}, timeout=timeout
     )
-    root = ElementTree.fromstring(response.content)
-    return int(root.get("numberMatched"))
+    data = json.loads(response.content)
+    return int(data["totalFeatures"])
 
 
 def fetch_pages_concurrently(

@@ -89,17 +89,13 @@ def test_fetch_pages_concurrently_prints_progress(monkeypatch, capsys):
     assert "fetched 2/2 widgets" in out
 
 
-def test_fetch_hit_count_parses_number_matched_from_xml(monkeypatch):
-    xml = (
-        b'<?xml version="1.0" encoding="UTF-8"?>'
-        b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" '
-        b'numberMatched="12345" numberReturned="0"/>'
-    )
+def test_fetch_hit_count_parses_total_features_from_json(monkeypatch):
+    body = b'{"type": "FeatureCollection", "totalFeatures": 12345, "features": []}'
     captured_params = {}
 
     def fake_get_with_retry(url, *, params, timeout):
         captured_params.update(params)
-        return _FakeResponse(xml)
+        return _FakeResponse(body)
 
     monkeypatch.setattr(
         "shroom_fm.concurrent_fetch.get_with_retry", fake_get_with_retry
@@ -108,5 +104,6 @@ def test_fetch_hit_count_parses_number_matched_from_xml(monkeypatch):
     result = fetch_hit_count("http://example.com", {"service": "WFS"})
 
     assert result == 12345
-    assert captured_params["resultType"] == "hits"
+    assert captured_params["count"] == 1
+    assert captured_params["startIndex"] == 0
     assert captured_params["service"] == "WFS"

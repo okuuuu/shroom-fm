@@ -229,3 +229,4 @@ data/adjacency.geojson
 data/ecotones.geojson
 data/roads.geojson
 data/barriers.geojson
+data/scout_candidates.geojson

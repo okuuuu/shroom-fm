@@ -1,6 +1,8 @@
+import json
+
 import pandas as pd
 
-from shroom_fm.enrich import compute_species_shares, summarize_composition
+from shroom_fm.enrich import compute_species_shares, fetch_eraldis_element, summarize_composition
 
 
 def test_summarize_composition_returns_empty_dict_for_empty_input():
@@ -102,3 +104,46 @@ def test_compute_species_shares_sums_osakaal_by_target_species():
         "birch_share": 0.0,
         "aspen_share": 0.0,
     }
+
+
+def _element_json_page(rows: list[dict]) -> bytes:
+    return json.dumps(
+        {"type": "FeatureCollection", "features": [{"properties": r} for r in rows]}
+    ).encode()
+
+
+def test_fetch_eraldis_element_batches_ids_and_concatenates(monkeypatch):
+    monkeypatch.setattr("shroom_fm.enrich.ID_BATCH_SIZE", 2)
+
+    captured_params_list = []
+
+    def fake_fetch_pages_concurrently(url, params_list, **kwargs):
+        captured_params_list.extend(params_list)
+        return [
+            _element_json_page([{"eraldis_id": 1, "puuliik_kood": "MA"}]),
+            _element_json_page([{"eraldis_id": 3, "puuliik_kood": "KU"}]),
+        ]
+
+    monkeypatch.setattr(
+        "shroom_fm.enrich.fetch_pages_concurrently", fake_fetch_pages_concurrently
+    )
+
+    result = fetch_eraldis_element([1, 2, 3])
+
+    assert len(result) == 2
+    assert list(result["eraldis_id"]) == [1, 3]
+    assert captured_params_list[0]["CQL_FILTER"] == "eraldis_id IN (1,2)"
+    assert captured_params_list[1]["CQL_FILTER"] == "eraldis_id IN (3)"
+
+
+def test_fetch_eraldis_element_returns_empty_dataframe_for_empty_ids(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "shroom_fm.enrich.fetch_pages_concurrently",
+        lambda *a, **k: calls.append(1) or [],
+    )
+
+    result = fetch_eraldis_element([])
+
+    assert result.empty
+    assert calls == []

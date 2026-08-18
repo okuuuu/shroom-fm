@@ -4,7 +4,8 @@ import geopandas as gpd
 import pandas as pd
 from owslib.wfs import WebFeatureService
 
-from shroom_fm.retry import call_with_retry, get_with_retry
+from shroom_fm.concurrent_fetch import fetch_pages_concurrently
+from shroom_fm.retry import call_with_retry
 from shroom_fm.wfs import METSAREGISTER_OWS_URL
 
 COMPOSITION_DETAIL_COLUMNS = [
@@ -65,23 +66,30 @@ def fetch_classifier(wfs: WebFeatureService, typename: str) -> dict[str, str]:
 
 
 def fetch_eraldis_element(eraldis_ids: list[int]) -> pd.DataFrame:
+    if not eraldis_ids:
+        return pd.DataFrame([])
+    batches = [
+        eraldis_ids[i : i + ID_BATCH_SIZE] for i in range(0, len(eraldis_ids), ID_BATCH_SIZE)
+    ]
+    params_list = [
+        {
+            "service": "WFS",
+            "version": "2.0.0",
+            "request": "GetFeature",
+            "typeName": ERALDIS_ELEMENT_TYPENAME,
+            "outputFormat": "application/json",
+            "CQL_FILTER": "eraldis_id IN ({})".format(
+                ",".join(str(eid) for eid in batch)
+            ),
+        }
+        for batch in batches
+    ]
+    contents = fetch_pages_concurrently(
+        METSAREGISTER_OWS_URL, params_list, progress_label="composition batch"
+    )
     rows = []
-    for i in range(0, len(eraldis_ids), ID_BATCH_SIZE):
-        batch = eraldis_ids[i : i + ID_BATCH_SIZE]
-        id_list = ",".join(str(eid) for eid in batch)
-        response = get_with_retry(
-            METSAREGISTER_OWS_URL,
-            params={
-                "service": "WFS",
-                "version": "2.0.0",
-                "request": "GetFeature",
-                "typeName": ERALDIS_ELEMENT_TYPENAME,
-                "outputFormat": "application/json",
-                "CQL_FILTER": f"eraldis_id IN ({id_list})",
-            },
-            timeout=30,
-        )
-        data = response.json()
+    for content in contents:
+        data = json.loads(content)
         rows.extend(feature["properties"] for feature in data["features"])
     return pd.DataFrame(rows)
 

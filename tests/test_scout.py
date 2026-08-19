@@ -7,6 +7,7 @@ from shroom_fm.scout import (
     join_ecotone_access,
     scout_candidates_for_species,
     scout_score,
+    weather_coverage_ratio,
 )
 
 
@@ -94,19 +95,19 @@ def test_join_ecotone_access_normalizes_missing_stand_reference_to_zero_access()
 
 
 def test_scout_score_multiplies_when_eligible():
-    assert scout_score(1.2, 0.5, True) == pytest.approx(0.6)
+    assert scout_score(1.2, 0.5, 1.0, True) == pytest.approx(0.6)
 
 
 def test_scout_score_is_none_when_ineligible():
-    assert scout_score(1.2, 0.5, False) is None
+    assert scout_score(1.2, 0.5, 1.0, False) is None
 
 
 def test_scout_score_is_none_when_ecotone_score_missing():
-    assert scout_score(None, 0.5, True) is None
+    assert scout_score(None, 0.5, 1.0, True) is None
 
 
 def test_scout_score_is_none_when_access_modifier_missing():
-    assert scout_score(1.0, None, True) is None
+    assert scout_score(1.0, None, 1.0, True) is None
 
 
 def test_scout_candidates_for_species_splits_and_sorts_tiers():
@@ -114,6 +115,9 @@ def test_scout_candidates_for_species_splits_and_sorts_tiers():
         {
             "ecotone_score_chanterelle": [1.5, 1.2, 0.9, 0.6, None],
             "access_modifier": [0.8, 0.5, 0.9, 0.1, 0.9],
+            # Neutral fruiting_modifier (all 1.0): this test verifies tiering/sorting on
+            # ecotone_score x access_modifier alone, unaffected by the fruiting factor.
+            "fruiting_modifier_chanterelle": [1.0, 1.0, 1.0, 1.0, 1.0],
             "scout_eligible": [True, True, False, True, True],
         },
         geometry=[Point(i, 0) for i in range(5)],
@@ -133,6 +137,9 @@ def test_scout_candidates_for_species_caps_each_tier_independently():
         {
             "ecotone_score_chanterelle": [3.0, 2.0, 1.0],
             "access_modifier": [1.0, 1.0, 1.0],
+            # Neutral fruiting_modifier (all 1.0): this test verifies per-tier top_n
+            # capping, unaffected by the fruiting factor.
+            "fruiting_modifier_chanterelle": [1.0, 1.0, 1.0],
             "scout_eligible": [True, True, True],
         },
         geometry=[Point(i, 0) for i in range(3)],
@@ -144,3 +151,84 @@ def test_scout_candidates_for_species_caps_each_tier_independently():
     assert len(ranked) == 2
     assert list(ranked["scout_score"]) == [3.0, 2.0]
     assert len(remote) == 0
+
+
+def test_scout_score_multiplies_all_three_factors_when_eligible():
+    assert scout_score(1.2, 0.5, 0.8, True) == pytest.approx(0.48)
+
+
+def test_scout_score_is_none_when_fruiting_modifier_missing():
+    assert scout_score(1.2, 0.5, None, True) is None
+
+
+def test_scout_candidates_for_species_reports_missing_fruiting_data_reason():
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "ecotone_score_chanterelle": [1.5, 1.2],
+            "access_modifier": [0.8, 0.9],
+            "fruiting_modifier_chanterelle": [0.7, None],
+            "scout_eligible": [True, True],
+        },
+        geometry=[Point(0, 0), Point(1, 0)],
+        crs="EPSG:3301",
+    )
+
+    ranked, remote = scout_candidates_for_species(joined_gdf, "chanterelle", top_n=5)
+
+    assert len(ranked) == 1
+    assert len(remote) == 1
+    assert remote.iloc[0]["exclusion_reason"] == "MISSING_FRUITING_DATA"
+    assert remote.iloc[0]["ecotone_score"] == pytest.approx(1.2)
+
+
+def test_scout_candidates_for_species_access_ineligibility_takes_precedence_over_missing_fruiting():
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "ecotone_score_chanterelle": [1.5],
+            "access_modifier": [0.0],
+            "fruiting_modifier_chanterelle": [None],  # both problems apply at once
+            "scout_eligible": [False],
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:3301",
+    )
+
+    ranked, remote = scout_candidates_for_species(joined_gdf, "chanterelle", top_n=5)
+
+    assert len(ranked) == 0
+    assert len(remote) == 1
+    assert remote.iloc[0]["exclusion_reason"] == REMOTE_EXCLUSION_REASON
+
+
+def test_weather_coverage_ratio_computes_fraction_with_fruiting_data():
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "ecotone_score_chanterelle": [1.0, 1.0, 1.0, None],
+            "access_modifier": [0.5, 0.5, 0.5, 0.5],
+            "fruiting_modifier_chanterelle": [0.5, None, 0.5, 0.5],
+            "scout_eligible": [True, True, False, True],
+        },
+        geometry=[Point(i, 0) for i in range(4)],
+        crs="EPSG:3301",
+    )
+    # Eligible pool (non-null ecotone_score AND scout_eligible): rows 0, 1 (row 2 is
+    # ecologically scored but access-ineligible; row 3 has no ecotone_score at all).
+    # Of that pool of 2, row 0 has fruiting data, row 1 doesn't -> ratio 0.5.
+    ratio = weather_coverage_ratio(joined_gdf, "chanterelle")
+    assert ratio == pytest.approx(0.5)
+
+
+def test_weather_coverage_ratio_is_one_when_no_eligible_candidates_exist():
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "ecotone_score_chanterelle": [None],
+            "access_modifier": [0.5],
+            "fruiting_modifier_chanterelle": [None],
+            "scout_eligible": [False],
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:3301",
+    )
+    # No candidates are even eligible to begin with — vacuously "fully covered",
+    # not a coverage problem to report.
+    assert weather_coverage_ratio(joined_gdf, "chanterelle") == pytest.approx(1.0)

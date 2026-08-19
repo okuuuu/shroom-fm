@@ -55,36 +55,72 @@ def join_ecotone_access(
     return result
 
 
+MISSING_FRUITING_DATA_REASON = "MISSING_FRUITING_DATA"
+MIN_SCOUT_WEATHER_COVERAGE = 0.90
+
+
 def scout_score(
-    ecotone_score: float | None, access_modifier: float | None, eligible: bool
+    ecotone_score: float | None,
+    access_modifier: float | None,
+    fruiting_modifier: float | None,
+    eligible: bool,
 ) -> float | None:
-    if not eligible or ecotone_score is None or access_modifier is None:
+    if (
+        not eligible
+        or ecotone_score is None
+        or access_modifier is None
+        or fruiting_modifier is None
+    ):
         return None
-    return ecotone_score * access_modifier
+    return ecotone_score * access_modifier * fruiting_modifier
 
 
 def scout_candidates_for_species(
     joined_gdf: gpd.GeoDataFrame, species: str, top_n: int
 ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     ecotone_col = f"ecotone_score_{species}"
+    fruiting_col = f"fruiting_modifier_{species}"
     scored = joined_gdf[joined_gdf[ecotone_col].notna()].copy()
     scored["ecotone_score"] = scored[ecotone_col]
+    scored["fruiting_score"] = scored[fruiting_col]
     scored["scout_score"] = [
-        scout_score(ecotone_score_value, access_modifier_value, eligible)
-        for ecotone_score_value, access_modifier_value, eligible in zip(
-            scored["ecotone_score"], scored["access_modifier"], scored["scout_eligible"]
+        scout_score(ecotone_score_value, access_modifier_value, fruiting_value, eligible)
+        for ecotone_score_value, access_modifier_value, fruiting_value, eligible in zip(
+            scored["ecotone_score"],
+            scored["access_modifier"],
+            scored["fruiting_score"],
+            scored["scout_eligible"],
         )
     ]
+
+    def _exclusion_reason(eligible, fruiting_value):
+        if not eligible:
+            return REMOTE_EXCLUSION_REASON
+        return MISSING_FRUITING_DATA_REASON
 
     ranked = (
         scored[scored["scout_score"].notna()]
         .sort_values("scout_score", ascending=False)
         .head(top_n)
     )
-    remote = (
-        scored[scored["scout_score"].isna()]
-        .assign(exclusion_reason=REMOTE_EXCLUSION_REASON)
-        .sort_values("ecotone_score", ascending=False)
-        .head(top_n)
-    )
+    excluded = scored[scored["scout_score"].isna()].copy()
+    excluded["exclusion_reason"] = [
+        _exclusion_reason(eligible, fruiting_value)
+        for eligible, fruiting_value in zip(
+            excluded["scout_eligible"], excluded["fruiting_score"]
+        )
+    ]
+    remote = excluded.sort_values("ecotone_score", ascending=False).head(top_n)
     return ranked, remote
+
+
+def weather_coverage_ratio(joined_gdf: gpd.GeoDataFrame, species: str) -> float:
+    ecotone_col = f"ecotone_score_{species}"
+    fruiting_col = f"fruiting_modifier_{species}"
+    eligible_pool = joined_gdf[
+        joined_gdf[ecotone_col].notna() & (joined_gdf["scout_eligible"] == True)  # noqa: E712
+    ]
+    if len(eligible_pool) == 0:
+        return 1.0
+    with_fruiting_data = eligible_pool[eligible_pool[fruiting_col].notna()]
+    return len(with_fruiting_data) / len(eligible_pool)

@@ -1436,7 +1436,19 @@ git commit -m "feat: add join_ecotone_fruiting and score_ecotone_fruiting.py"
 - [ ] **Step 1: Write the failing tests**
 
 Add to `tests/test_scout.py` (near the existing `scout_score`/
-`scout_candidates_for_species` tests):
+`scout_candidates_for_species` tests). The file's existing import block is:
+
+```python
+from shroom_fm.scout import (
+    REMOTE_EXCLUSION_REASON,
+    join_ecotone_access,
+    scout_candidates_for_species,
+    scout_score,
+)
+```
+
+Add `weather_coverage_ratio` to this import list (the new tests below call it
+unqualified).
 
 ```python
 def test_scout_score_multiplies_all_three_factors_when_eligible():

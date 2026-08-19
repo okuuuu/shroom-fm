@@ -16,8 +16,13 @@ _RADAR_COLUMNS = (
     "rain_3d_mm",
     "rain_7d_mm",
     "rain_14d_mm",
-    "hours_since_rain",
+    "hours_since_any_rain",
     "wet_hours_72h",
+    "hours_since_significant_rain",
+    "hours_since_strong_rain",
+    "last_significant_event_mm",
+    "last_strong_event_mm",
+    "max_24h_rain_14d",
 )
 _MEPS_COLUMNS = (
     "temp_mean_3d",
@@ -25,6 +30,21 @@ _MEPS_COLUMNS = (
     "rh_mean_3d",
     "rh_night_mean_3d",
 )
+
+_BIN_DIFF_EPSILON = 1e-6
+
+
+def _bin_difference(minuend, subtrahend, minuend_degraded: bool, subtrahend_degraded: bool):
+    if minuend_degraded or subtrahend_degraded or pd.isna(minuend) or pd.isna(subtrahend):
+        return None
+    diff = minuend - subtrahend
+    if diff < -_BIN_DIFF_EPSILON:
+        raise ValueError(
+            f"Rain bin difference is negative beyond rounding tolerance ({diff}) — "
+            "this should be mathematically impossible since the larger window's sum "
+            "is a superset of the smaller window's slots; likely an accumulation bug."
+        )
+    return max(0.0, diff)
 
 
 def _is_meps_stale(meps_newest_hour: "datetime | None", now: datetime) -> bool:
@@ -106,9 +126,29 @@ def refresh_weather(
     result["rain_14d_mm"] = _null_if_degraded(
         radar_joined["rain_14d_mm"], radar_degraded_14d
     )
-    result["hours_since_rain"] = _null_if_degraded(
-        radar_joined["hours_since_rain"], radar_degraded_14d
+    result["hours_since_any_rain"] = _null_if_degraded(
+        radar_joined["hours_since_any_rain"], radar_degraded_14d
     )
+    for col in (
+        "hours_since_significant_rain",
+        "hours_since_strong_rain",
+        "last_significant_event_mm",
+        "last_strong_event_mm",
+        "max_24h_rain_14d",
+    ):
+        result[col] = _null_if_degraded(radar_joined[col], radar_degraded_14d)
+
+    result["rain_0_3d_mm"] = [
+        None if radar_degraded_3d or pd.isna(v) else v for v in radar_joined["rain_3d_mm"]
+    ]
+    result["rain_3_7d_mm"] = [
+        _bin_difference(v7, v3, radar_degraded_7d, radar_degraded_3d)
+        for v7, v3 in zip(radar_joined["rain_7d_mm"], radar_joined["rain_3d_mm"])
+    ]
+    result["rain_7_14d_mm"] = [
+        _bin_difference(v14, v7, radar_degraded_14d, radar_degraded_7d)
+        for v14, v7 in zip(radar_joined["rain_14d_mm"], radar_joined["rain_7d_mm"])
+    ]
     for col in _MEPS_COLUMNS:
         result[col] = _null_if_degraded(meps_joined[col], meps_degraded)
 

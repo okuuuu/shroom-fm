@@ -575,12 +575,12 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
     # (1.0 + 2.0 + 0.0) mm/h * (5/60) h per slot = 0.25 mm total
     assert row0_col0["rain_3d_mm"] == pytest.approx(0.25)
     assert row0_col0["rain_14d_mm"] == pytest.approx(0.25)
-    assert row0_col0["hours_since_rain"] == pytest.approx(5 / 60)  # last wet slot was 5 min before `now`
+    assert row0_col0["hours_since_any_rain"] == pytest.approx(5 / 60)  # last wet slot was 5 min before `now`
     assert row0_col0["wet_hours_72h"] == pytest.approx(2 * 5 / 60)  # 2 wet slots
 
     row1_col1 = points[(points["row"] == 1) & (points["col"] == 1)].iloc[0]
     assert row1_col1["rain_3d_mm"] == pytest.approx(0.0)
-    assert np.isnan(row1_col1["hours_since_rain"])  # never rained in the cached window
+    assert np.isnan(row1_col1["hours_since_any_rain"])  # never rained in the cached window
 
     # All 3 files fall within the 3d/7d/14d windows (they're 10 minutes apart, well
     # inside all three), but the expected slot counts differ per window, so the
@@ -624,3 +624,76 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
     assert coverage["7d"] < coverage["3d"]
     assert coverage["14d"] < coverage["7d"]
     assert coverage["14d"] < 0.5
+
+
+def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+
+    # Single-pixel (1x1) grid. rate=24.0 mm/h * (5/60)h = 2.0mm per slot.
+    # Slot sequence (5 min apart): 2,2,2,2,2 mm -> cumulative event total 2,4,6,8,10.
+    # Crosses SIGNIFICANT_EVENT_MM=5.0 at the 3rd slot (cumulative 6.0), continues
+    # advancing through the 4th slot (cumulative 8.0), and reaches STRONG_EVENT_MM=10.0
+    # at the 5th slot (cumulative 10.0) since it's still the same event.
+    _write_fake_composite(cache_dir / "20260815T000000Z_1.h5", rate_grid=[[24.0]])
+    _write_fake_composite(cache_dir / "20260815T000500Z_2.h5", rate_grid=[[24.0]])
+    _write_fake_composite(cache_dir / "20260815T001000Z_3.h5", rate_grid=[[24.0]])
+    _write_fake_composite(cache_dir / "20260815T001500Z_4.h5", rate_grid=[[24.0]])
+    # 5th slot: cumulative 8+2=10.0 -> crosses STRONG_EVENT_MM=10.0.
+    _write_fake_composite(cache_dir / "20260815T002000Z_5.h5", rate_grid=[[24.0]])
+
+    # Dry gap > 6h, then a NEW event that never reaches 5mm — must not affect the
+    # already-recorded significant/strong stats from the first event.
+    _write_fake_composite(cache_dir / "20260815T080000Z_6.h5", rate_grid=[[12.0]])  # 1.0mm
+
+    now = _utc(2026, 8, 15, 9, 0)  # 1h after the 6th file
+
+    points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
+    row = points.iloc[0]
+
+    # Last significant/strong slot was the 5th file (00:20:00), not the 3rd (first
+    # crossing) or the 6th (a separate, non-qualifying event) — proves continuous
+    # advancement through the event and correct event-boundary reset on the gap.
+    expected_hours = (now - _utc(2026, 8, 15, 0, 20)).total_seconds() / 3600
+    assert row["hours_since_significant_rain"] == pytest.approx(expected_hours)
+    assert row["hours_since_strong_rain"] == pytest.approx(expected_hours)
+    assert row["last_significant_event_mm"] == pytest.approx(10.0)
+    assert row["last_strong_event_mm"] == pytest.approx(10.0)
+
+
+def test_accumulate_rainfall_never_had_a_significant_event_is_nan(tmp_path):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    # Single slot, only 1.0mm — never reaches SIGNIFICANT_EVENT_MM=5.0.
+    _write_fake_composite(cache_dir / "20260815T000000Z_1.h5", rate_grid=[[12.0]])
+
+    now = _utc(2026, 8, 15, 0, 5)
+    points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
+    row = points.iloc[0]
+
+    assert np.isnan(row["hours_since_significant_rain"])
+    assert np.isnan(row["hours_since_strong_rain"])
+    assert row["last_significant_event_mm"] == pytest.approx(0.0)
+    assert row["last_strong_event_mm"] == pytest.approx(0.0)
+
+
+def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole_period(
+    tmp_path,
+):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    # Two slots close together (1.0mm each, same 24h window) = 2.0mm concentrated.
+    _write_fake_composite(cache_dir / "20260815T000000Z_1.h5", rate_grid=[[12.0]])
+    _write_fake_composite(cache_dir / "20260815T000500Z_2.h5", rate_grid=[[12.0]])
+    # A 3rd slot 5 days later (well outside any 24h window containing the first two).
+    _write_fake_composite(cache_dir / "20260820T000000Z_3.h5", rate_grid=[[12.0]])
+
+    now = _utc(2026, 8, 20, 0, 10)
+    points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
+    row = points.iloc[0]
+
+    # rain_14d_mm sums all 3 slots (3.0mm total), but max_24h_rain_14d only ever sees
+    # 2.0mm in any single rolling 24h window — the two early slots never coexist in
+    # the same window as the late one.
+    assert row["rain_14d_mm"] == pytest.approx(3.0)
+    assert row["max_24h_rain_14d"] == pytest.approx(2.0)

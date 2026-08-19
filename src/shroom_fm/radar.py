@@ -2,6 +2,7 @@ import concurrent.futures
 import os
 import requests
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -299,6 +300,10 @@ def radar_pixel_centers(georef: dict) -> gpd.GeoDataFrame:
 _RADAR_WINDOW_DAYS = 14
 _RADAR_SLOT_MINUTES = 5
 
+RAIN_EVENT_DRY_GAP_H = 6.0
+SIGNIFICANT_EVENT_MM = 5.0
+STRONG_EVENT_MM = 10.0
+
 
 def accumulate_rainfall(
     cache_dir: Path,
@@ -327,18 +332,19 @@ def accumulate_rainfall(
                 "rain_3d_mm": [],
                 "rain_7d_mm": [],
                 "rain_14d_mm": [],
-                "hours_since_rain": [],
+                "hours_since_any_rain": [],
                 "wet_hours_72h": [],
+                "hours_since_significant_rain": [],
+                "hours_since_strong_rain": [],
+                "last_significant_event_mm": [],
+                "last_strong_event_mm": [],
+                "max_24h_rain_14d": [],
             },
             geometry=[],
             crs="EPSG:3301",
         )
         return empty, coverage
 
-    # Determine the full grid's georeferencing from the first file's attrs only (cheap
-    # — does not read the raster itself), then compute the small sub-region slice
-    # covering the eraldis bbox once, and reuse that same slice for every file in the
-    # window so each per-file read only touches the relevant sub-region.
     full_georef = read_radar_full_georef(files[0])
     row_slice, col_slice = radar_bbox_slice(full_georef, eraldis_bounds_wgs84)
 
@@ -353,12 +359,27 @@ def accumulate_rainfall(
     last_wet_epoch = np.full(shape, -np.inf)
     wet_slots_72h = np.zeros(shape, dtype=int)
 
+    event_mm = np.zeros(shape)
+    event_last_wet_epoch = np.full(shape, -np.inf)
+    last_significant_epoch = np.full(shape, -np.inf)
+    last_significant_mm = np.zeros(shape)
+    last_strong_epoch = np.full(shape, -np.inf)
+    last_strong_mm = np.zeros(shape)
+
+    window_buffer = deque()
+    window_sum = np.zeros(shape)
+    max_24h_rain = np.zeros(shape)
+
     slot_hours = _RADAR_SLOT_MINUTES / 60
     count_3d = 0
     count_7d = 0
 
+    rain_event_dry_gap_seconds = RAIN_EVENT_DRY_GAP_H * 3600
+    max_24h_seconds = 24 * 3600
+
     for path in files:
         timestamp = cached_radar_timestamp(path)
+        epoch = timestamp.timestamp()
         rate_mm_h, file_georef = parse_radar_composite(
             path, row_slice=row_slice, col_slice=col_slice
         )
@@ -379,9 +400,42 @@ def accumulate_rainfall(
             rain_3d += mm_this_slot
             count_3d += 1
         wet_mask = np.nan_to_num(rate_mm_h, nan=-1.0) > 0.0
-        last_wet_epoch = np.where(wet_mask, timestamp.timestamp(), last_wet_epoch)
+        last_wet_epoch = np.where(wet_mask, epoch, last_wet_epoch)
         if timestamp >= cutoff_72h:
             wet_slots_72h += wet_mask.astype(int)
+
+        # Event-based significant/strong rain tracking: a run of wet slots with no
+        # gap exceeding RAIN_EVENT_DRY_GAP_H between consecutive wet slots is one
+        # event. Re-evaluated on every wet slot (not just the crossing slot), so
+        # once event_mm first reaches a threshold, every later wet slot of the SAME
+        # event keeps advancing that threshold's timestamp through to the event's
+        # actual end, not freezing at the instant of crossing.
+        gap_exceeded = wet_mask & (
+            (epoch - event_last_wet_epoch) > rain_event_dry_gap_seconds
+        )
+        event_mm = np.where(gap_exceeded, 0.0, event_mm)
+        event_mm = np.where(wet_mask, event_mm + mm_this_slot, event_mm)
+        event_last_wet_epoch = np.where(wet_mask, epoch, event_last_wet_epoch)
+
+        newly_significant = wet_mask & (event_mm >= SIGNIFICANT_EVENT_MM)
+        last_significant_epoch = np.where(
+            newly_significant, epoch, last_significant_epoch
+        )
+        last_significant_mm = np.where(
+            newly_significant, event_mm, last_significant_mm
+        )
+
+        newly_strong = wet_mask & (event_mm >= STRONG_EVENT_MM)
+        last_strong_epoch = np.where(newly_strong, epoch, last_strong_epoch)
+        last_strong_mm = np.where(newly_strong, event_mm, last_strong_mm)
+
+        # Rolling 24h max: maintain a sliding sum of the trailing 24h of slots.
+        window_buffer.append((epoch, mm_this_slot))
+        window_sum = window_sum + mm_this_slot
+        while window_buffer and (epoch - window_buffer[0][0]) > max_24h_seconds:
+            _, old_mm = window_buffer.popleft()
+            window_sum = window_sum - old_mm
+        max_24h_rain = np.maximum(max_24h_rain, window_sum)
 
     coverage = {
         "3d": count_3d / expected_slots_3d if expected_slots_3d else 0.0,
@@ -389,10 +443,20 @@ def accumulate_rainfall(
         "14d": len(files) / expected_slots_14d if expected_slots_14d else 0.0,
     }
 
-    hours_since_rain = np.where(
+    hours_since_any_rain = np.where(
         last_wet_epoch == -np.inf,
         np.nan,
         (now.timestamp() - last_wet_epoch) / 3600,
+    )
+    hours_since_significant_rain = np.where(
+        last_significant_epoch == -np.inf,
+        np.nan,
+        (now.timestamp() - last_significant_epoch) / 3600,
+    )
+    hours_since_strong_rain = np.where(
+        last_strong_epoch == -np.inf,
+        np.nan,
+        (now.timestamp() - last_strong_epoch) / 3600,
     )
     wet_hours_72h = wet_slots_72h * slot_hours
 
@@ -400,7 +464,12 @@ def accumulate_rainfall(
     points["rain_3d_mm"] = rain_3d.ravel()
     points["rain_7d_mm"] = rain_7d.ravel()
     points["rain_14d_mm"] = rain_14d.ravel()
-    points["hours_since_rain"] = hours_since_rain.ravel()
+    points["hours_since_any_rain"] = hours_since_any_rain.ravel()
     points["wet_hours_72h"] = wet_hours_72h.ravel()
+    points["hours_since_significant_rain"] = hours_since_significant_rain.ravel()
+    points["hours_since_strong_rain"] = hours_since_strong_rain.ravel()
+    points["last_significant_event_mm"] = last_significant_mm.ravel()
+    points["last_strong_event_mm"] = last_strong_mm.ravel()
+    points["max_24h_rain_14d"] = max_24h_rain.ravel()
     points = points.to_crs("EPSG:3301")
     return points, coverage

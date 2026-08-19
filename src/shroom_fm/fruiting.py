@@ -253,3 +253,32 @@ def score_stands(weather_gdf: "gpd.GeoDataFrame", now) -> "gpd.GeoDataFrame":
         result[f"fruiting_season_prior_{species}"] = season_priors
 
     return result
+
+
+def _none_if_nan(value):
+    import pandas as pd
+    return None if pd.isna(value) else value
+
+
+def join_ecotone_fruiting(
+    ecotones_gdf: "gpd.GeoDataFrame", weather_gdf: "gpd.GeoDataFrame"
+) -> "gpd.GeoDataFrame":
+    result = ecotones_gdf.copy()
+
+    for species in TARGET_SPECIES:
+        score_col = f"fruiting_score_{species}"
+        # Only process if this species column exists in weather_gdf
+        if score_col not in weather_gdf.columns:
+            continue
+        scores_by_id = dict(zip(weather_gdf["id"], weather_gdf[score_col]))
+        modifiers = []
+        for id_a, id_b in zip(result["id_a"], result["id_b"]):
+            score_a = _none_if_nan(scores_by_id.get(id_a))
+            score_b = _none_if_nan(scores_by_id.get(id_b))
+            if score_a is None or score_b is None:
+                modifiers.append(None)
+            else:
+                modifiers.append((score_a + score_b) / 2.0)
+        result[f"fruiting_modifier_{species}"] = modifiers
+
+    return result

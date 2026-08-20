@@ -50,13 +50,23 @@ guard — see that section for details. A geography-only grouping layer sitting 
 below) — has also landed as code (`src/shroom_fm/forest_block.py`,
 `src/shroom_fm/macrocluster.py`) and is wired into `main.py`. **Real-scale verification
 against the full 262,054-stand dataset on 2026-08-20 found `scripts/compute_forest_blocks.py`
-real and working** (11,658 forest blocks, 2m8.7s), **but found `scripts/compute_macroclusters.py`
-does not complete at real scale** — its connectivity-constrained partitioning step is
-algorithmically too expensive for the single, all-262,054-stand-spanning super-component
-Estonia's real forest density produces at this layer's proximity threshold; see
-"Macroclustering" below for the full diagnosis. `scripts/rollup_macroclusters.py` is
-consequently unverified too, since it depends on `compute_macroclusters.py`'s output
-(`data/macroclusters.geojson`). Still deferred: personal observation history and a
+real and working** (11,658 forest blocks, 2m8.7s). `scripts/compute_macroclusters.py`
+initially did not complete at real scale (its hand-written connectivity-constrained
+complete-linkage merge was an O(n⁴)-class blowup on the single, all-262,054-stand-spanning
+super-component Estonia's real forest density produces at this layer's proximity threshold)
+— **this has since been fixed** by replacing that merge loop with `scipy.cluster.hierarchy`'s
+vectorized global complete-linkage clustering plus a simple post-hoc `networkx`
+connectivity-split, and now completes in **6m1s real time, producing 22 macroclusters from
+the 11,658 forest blocks, 0 flagged `oversized_macrocluster`**; see "Macroclustering" below
+for the full before/after diagnosis. `scripts/rollup_macroclusters.py` can now run (it no
+longer lacks its `data/macroclusters.geojson` input), but real-scale verification of *that*
+script surfaced a separate, new problem: it OOM-kills (reproduced twice, exit 137 both
+times) on this 7.7GB machine while loading `data/eraldis.geojson` (787MB),
+`data/ecotones.geojson` (**3.15GB** on disk), and `data/weather_eraldis.geojson` (1.1GB) all
+at once — unrelated to the macrocluster-partitioning algorithm fix (this script and its
+`join_ecotone_fruiting`/`join_ecotone_access` dependencies were not touched by that fix); see
+"Macroclustering" below for details. `data/macrocluster_state.geojson` has therefore still
+never been produced against real data. Still deferred: personal observation history and a
 landscape-mosaic diversity bonus — neither exists yet, and `ScoutScore` v1 simply omits
 them from its formula rather than faking neutral placeholder values for them. This file
 documents the target architecture so implementation stays consistent; update it as more of
@@ -85,10 +95,9 @@ branches done; step 11 needs everything upstream; step 12 needs step 5 and step 
    production scale** — see "Macroclustering" below.
 5. `uv run python scripts/compute_macroclusters.py` — partitions `forest_block`s into
    `macrocluster`s → `data/macroclusters.geojson`, plus a new `macrocluster_id` column onto
-   `data/forest_blocks.geojson`/`data/eraldis.geojson` (needs step 4 already done). **Does
-   NOT complete at production scale as currently implemented** — see "Macroclustering"
-   below for the confirmed root cause; do not rely on this step's output being produced in
-   a real run today.
+   `data/forest_blocks.geojson`/`data/eraldis.geojson` (needs step 4 already done). **Fixed
+   and verified at production scale** (6m1s real time, 22 macroclusters, 0 oversized) — see
+   "Macroclustering" below.
 6. `uv run python scripts/score_ecotones.py` — score boundary contrast →
    `data/ecotones.geojson`
 7. `uv run python scripts/score_habitat.py` — `StandHabitatScore` per species onto
@@ -109,8 +118,10 @@ branches done; step 11 needs everything upstream; step 12 needs step 5 and step 
 12. `uv run python scripts/rollup_macroclusters.py` — joins today's
     `data/scout_candidates.geojson` (step 11) against `data/macroclusters.geojson` (step 5)
     for a per-macrocluster daily snapshot → `data/macrocluster_state.geojson` (needs steps 5
-    and 11 already done — **currently unreachable in a real run since step 5 doesn't
-    complete**; see "Macroclustering" below).
+    and 11 already done — step 5's blocker is fixed, but **this step now OOM-kills at real
+    scale for a separate, unrelated reason** — loading `data/eraldis.geojson` +
+    `data/ecotones.geojson` (3.15GB) + `data/weather_eraldis.geojson` all at once exceeds
+    this 7.7GB machine's memory; see "Macroclustering" below).
 
 At real scale (262,054 stands, 82,731 road segments, 1,878 barriers within the current
 33-70km/37km-wide annulus around home): steps 1 (`download_eraldis`), 2 (`enrich_eraldis`),
@@ -125,11 +136,13 @@ total wall time), step 9 2m32s for both the roads and barriers layers (previousl
 also at the old smaller radius, so this is faster in absolute terms despite the current
 radius yielding more roads/barriers than before). Step 3 is fast (local computation); step 4
 (`compute_forest_blocks`) took **2m8.7s** real time at real scale (262,054 eraldis →
-11,658 forest blocks, 1 flagged `oversized_block`) — see "Macroclustering" below for detail
-and for why step 5 (`compute_macroclusters`) could not be timed the same way (it does not
-finish). Steps 6-8 are fast (local computation), step 10 takes well under a minute
-(spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step 11 is
-near-instant. Step 12 is unverified at real scale (blocked by step 5).
+11,658 forest blocks, 1 flagged `oversized_block`); step 5 (`compute_macroclusters`), after
+the scipy-based fix described in "Macroclustering" below, took **6m1s** real time (22
+macroclusters, 0 oversized). Steps 6-8 are fast (local computation), step 10 takes well
+under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step
+11 is near-instant. Step 12 (`rollup_macroclusters`) is still unverified at real scale — it
+OOM-kills (reproduced twice) for a separate, unrelated memory-scaling reason; see
+"Macroclustering" below.
 
 Note: the road/barrier counts above (82,731 / 1,878) are higher than an earlier plan
 document's "50,008 roads, 1,564 barriers" figure — that figure was measured at the old
@@ -361,8 +374,8 @@ travel-time facts, same discipline as this project's other v0 priors
 `oversized_block` is measured against), `TARGET_BLOCK_COUNT = (5, 15)` (soft/diagnostic-only
 per-macrocluster block-count band).
 
-**Real pipeline run against the full 262,054-stand dataset, 2026-08-20 —
-`compute_forest_blocks.py` succeeded, `compute_macroclusters.py` did not complete:**
+**Round 1 (2026-08-20, since fixed): `compute_forest_blocks.py` succeeded,
+`compute_macroclusters.py` did not complete.**
 
 `scripts/compute_forest_blocks.py` is real and working at production scale: **2m8.7s**
 real time, producing `11,658 forest block`s from `262,054 eraldis` with **1 flagged
@@ -370,51 +383,116 @@ real time, producing `11,658 forest block`s from `262,054 eraldis` with **1 flag
 on `data/eraldis.geojson`.
 
 `scripts/compute_macroclusters.py`, run immediately after against that real
-`data/forest_blocks.geojson`, **did not finish** — it was still running, pinned at 100% of
-one CPU core, after 42 minutes, then died with no completion output and no traceback
-(consistent with the OS OOM-killer: the process's own RSS had climbed to ~49-54% of this
-box's 7.7GB total RAM, `dmesg` showed active OOM-killer runs in this window, and system
-memory/swap fully recovered the instant the process disappeared — `real 42m5.6s` / `user
-41m54.6s` from the shell's own `time` measurement of the dead child). No
-`data/macroclusters.geojson` was ever written (the script's `to_file()` calls run only
-after the computation returns), so `data/eraldis.geojson`/`data/forest_blocks.geojson` were
-left exactly as `compute_forest_blocks.py` produced them — no partial/corrupt output.
-Consequently `scripts/rollup_macroclusters.py` could not be run either (it requires
-`data/macroclusters.geojson`), and the `cross_macrocluster_ecotone_count`/
-`oversized_macrocluster` real counts and the `data/macroclusters.geojson`/
-`data/macrocluster_state.geojson` spot-checks this task was supposed to perform could not
-be obtained.
+`data/forest_blocks.geojson`, **did not finish on that first attempt** — it was still
+running, pinned at 100% of one CPU core, after 42 minutes, then died with no completion
+output and no traceback (consistent with the OS OOM-killer: the process's own RSS had
+climbed to ~49-54% of this box's 7.7GB total RAM, `dmesg` showed active OOM-killer runs in
+this window, and system memory/swap fully recovered the instant the process disappeared —
+`real 42m5.6s` / `user 41m54.6s` from the shell's own `time` measurement of the dead
+child). No `data/macroclusters.geojson` was ever written, so `data/eraldis.geojson`/
+`data/forest_blocks.geojson` were left exactly as `compute_forest_blocks.py` produced them
+— no partial/corrupt output. `scripts/rollup_macroclusters.py` could not be run either
+(it requires `data/macroclusters.geojson`), so the real-scale spot-checks this task was
+originally supposed to perform could not be obtained.
 
 **Root cause, confirmed via a targeted diagnostic (not a guess):** reproducing
 `build_block_proximity_graph`'s exact edge-construction logic with vectorized
 numpy/`shapely.distance` instead of `geopandas`' `sjoin` + `DataFrame.iterrows()` (so it
-actually finishes — ~100s total) shows the real `data/forest_blocks.geojson` collapses into
-**exactly one super-component containing all 11,658 forest blocks**, with 2,209,103 edges
-in the block-proximity graph at `BLOCK_NEIGHBOR_PROXY_M = 8,000m`. This isn't a bug in the
-graph-construction code — Estonia is genuinely forested densely enough (262,054 stands
-already consolidate into "only" 11,658 `near_gap`/`touching`-adjacency forest blocks, ~22.5
-eraldis/block on average) that an 8km proximity threshold transitively connects the entire
-70km-radius annulus into one graph component, not into many small independent ones. That
-single super-component is exactly the worst case for `_complete_linkage_merge` (see
-`macrocluster.py`): each `while` iteration re-scans **all** O(k²) remaining candidate
-cluster pairs from scratch with no incremental caching, and both `connectivity_adjacent`
-and `complete_linkage_distance` cost `O(|cluster_a| × |cluster_b|)` rather than `O(1)` once
-clusters grow past singletons — for n≈11,658 starting from singletons this is a genuine,
-confirmed **O(n⁴)-class blowup**, not merely "slow": the observed 42 minutes of CPU time
-did not complete even a single full pass at this scale, and extrapolating the growth rate
-puts a real finish time at many hours to days in pure Python, not minutes. **This confirms,
-at real production scale, the exact O(n⁴) performance concern two reviewers flagged during
-Task 4's implementation** (see the plan's Task 4 note on replacing
-`sklearn.cluster.AgglomerativeClustering` with a manual connectivity-constrained
-complete-linkage merge) — it was not a theoretical worry, it makes `compute_macroclusters.py`
-**unusable on the real dataset as currently implemented**, and needs a real algorithmic fix
-(e.g. a genuinely bounded/incremental connectivity-constrained clustering algorithm, a
-vectorized distance computation, and/or an upstream step that avoids ever handing the merge
-step an 11,658-node single super-component in the first place) before this pipeline stage
-can be considered production-ready. `forest_block.py`'s own per-block Python loop (flagged
-separately as a non-vectorized-loop concern) was *not* the bottleneck here — it's exactly
-the 2m8.7s `compute_forest_blocks.py` measurement above, real but unremarkable at this
-scale; the O(n⁴) merge loop is the sole confirmed blocker.
+actually finishes — ~100s total) showed the real `data/forest_blocks.geojson` collapses
+into **exactly one super-component containing all 11,658 forest blocks**, with 2,209,103
+edges in the block-proximity graph at `BLOCK_NEIGHBOR_PROXY_M = 8,000m`. This isn't a bug
+in the graph-construction code — Estonia is genuinely forested densely enough (262,054
+stands already consolidate into "only" 11,658 `near_gap`/`touching`-adjacency forest
+blocks, ~22.5 eraldis/block on average) that an 8km proximity threshold transitively
+connects the entire 70km-radius annulus into one graph component, not into many small
+independent ones. That single super-component was exactly the worst case for the
+then-current `_complete_linkage_merge`: each `while` iteration re-scanned **all** O(k²)
+remaining candidate cluster pairs from scratch with no incremental caching, and both
+`connectivity_adjacent` and `complete_linkage_distance` cost `O(|cluster_a| ×
+|cluster_b|)` rather than `O(1)` once clusters grow past singletons — for n≈11,658
+starting from singletons this was a genuine, confirmed **O(n⁴)-class blowup**, not merely
+"slow": the observed 42 minutes of CPU time did not complete even a single full pass at
+this scale, and extrapolating the growth rate would have put a real finish time at many
+hours to days in pure Python, not minutes. This confirmed, at real production scale, the
+exact O(n⁴) performance concern two reviewers flagged during Task 4's implementation (see
+the plan's Task 4 note on replacing `sklearn.cluster.AgglomerativeClustering` with a
+manual connectivity-constrained complete-linkage merge) — it was not a theoretical worry.
+
+**Round 2 (2026-08-20, the fix): replaced the hand-written O(n⁴) merge with
+`scipy.cluster.hierarchy` + a post-hoc `networkx` connectivity check.**
+
+`_complete_linkage_merge` was deleted outright. `_partition_component`
+(`src/shroom_fm/macrocluster.py`) now clusters purely on real geometric (centroid)
+distance using `scipy.cluster.hierarchy.linkage(method="complete")` +
+`fcluster(criterion="distance")` — scipy's vectorized NN-chain algorithm, O(n²) time
+rather than the old O(n⁴)-class from-scratch loop — computed **without any connectivity
+restriction in the clustering step itself**, which is deliberate: it avoids reproducing
+the Task 4 Round 1 defect where `sklearn.cluster.AgglomerativeClustering`'s
+connectivity-constrained `linkage="complete"` silently used a hop-weight proxy instead of
+true diameter distances for non-adjacent pairs. Connectivity is instead checked as a
+separate, simple post-hoc step: any flat cluster scipy produces that isn't actually
+`networkx`-connected (in the subgraph restricted to just that cluster's members) gets
+split into its real connected sub-components. This is provably safe — splitting only
+removes members from a group, so `geometry_extent_m` (convex-hull diameter) can only
+shrink or stay the same after a split, never re-exceed the cap that was already checked
+before the split, so no extent re-validation is needed after a connectivity split. A group
+whose real `geometry_extent_m` still exceeds the cap after clustering (centroid distance
+can be optimistic for large/elongated blocks) is recursively repartitioned with a shrunk
+threshold, same as before.
+
+Empirically verified before trusting the scipy swap (same discipline that caught the
+Round 1 sklearn bug): a standalone script reproduced the existing test's 5-node,
+9km-spaced chain scenario directly against `scipy.cluster.hierarchy.linkage`/`fcluster`
+(not through `compute_macroclusters`) and confirmed, by reading the actual linkage matrix,
+*why* it produces the `{0,1}`/`{2,3,4}` split at `threshold=35,000`: the algorithm's last
+candidate merge — joining `{0,1}` with `{2,3,4}` — would require true complete-linkage
+distance `max(dist(0,2..4))=36,000`, which exceeds the threshold, so that merge correctly
+never happens. A second standalone script confirmed the post-hoc connectivity-split fires
+correctly: two blocks 50m apart (well within any clustering threshold, so scipy groups
+them into one flat cluster) but with **no direct graph edge** between them — even though
+both belong to the same larger connected super-component via other nodes — got correctly
+split back into two singleton groups by `nx.connected_components(graph.subgraph(group))`;
+the same two blocks *with* a direct edge present correctly merged into one group.
+
+All 16 `tests/test_macrocluster.py` tests and the full 247-test suite pass unchanged — no
+test needed to change, confirming this is a pure algorithm-internals swap behind the same
+`compute_macroclusters` interface.
+
+**Real-scale re-verification, 2026-08-20, after the fix:** `time uv run python
+scripts/compute_macroclusters.py` against the same real `data/forest_blocks.geojson`
+(11,658 forest blocks, one 11,658-node super-component) completed in **real 6m1.407s**
+(`user 5m51.673s`, `sys 0m11.048s`) — down from 42+ minutes and an OOM kill — printing:
+`22 macroclusters from 11658 forest blocks, 0 oversized, saved to
+data/macroclusters.geojson`. Spot-check of `data/macroclusters.geojson`: all 22 rows'
+`geometry_extent_m` are `<= MACROCLUSTER_MAX_EXTENT_M` (35,000m; max observed
+34,399.9m), 0 rows flagged `oversized_macrocluster`, `forest_block_count` sums to exactly
+11,658 and `eraldis_count` sums to exactly 262,054 across the 22 rows (full accounting, no
+blocks lost or double-counted). `within_target_block_count` is `False` for all 22 rows
+(clusters range from 133 to 920 forest blocks each, far above the diagnostic-only
+`TARGET_BLOCK_COUNT = (5, 15)` band) — expected and not a bug, since that band is
+diagnostic-only (never enforced) and was calibrated for a much less densely-connected
+scenario than Estonia's real forest cover turned out to produce.
+
+**New, separate finding: `scripts/rollup_macroclusters.py` OOM-kills at real scale, for a
+reason unrelated to the macrocluster-partitioning algorithm.** With
+`data/macroclusters.geojson` now real, `rollup_macroclusters.py` was run against real data
+for the first time. It was killed by the OS OOM-killer twice in a row (`dmesg` confirms
+both: `Out of memory: Killed process ... python3 ... anon-rss:5776332kB` /
+`anon-rss:5782464kB`, exit code 137 both times, no output file produced either time). The
+likely cause: this script loads `data/eraldis.geojson` (787MB on disk), the real
+`data/ecotones.geojson` (**3.15GB** on disk — far larger than the other pipeline files),
+and `data/weather_eraldis.geojson` (1.1GB) fully into memory via `gpd.read_file()` before
+doing any filtering, on a machine with only 7.7GB RAM + 2GB swap. This is **not** a
+consequence of the Round 2 clustering fix — `rollup_macroclusters.py`,
+`rollup_daily_state`, `join_ecotone_fruiting`, and `join_ecotone_access` were not touched
+by that fix — it's a pre-existing memory-scaling limitation of the rollup step that this
+task happened to be the first to exercise against real data end-to-end. It remains
+unfixed and undiagnosed beyond this: `data/macrocluster_state.geojson` has never been
+produced against real data, so the `cross_macrocluster_ecotone_count` real count and the
+`data/macrocluster_state.geojson`-vs-`data/scout_candidates.geojson` spot-check remain
+outstanding. A real fix would likely need `rollup_macroclusters.py` (or
+`join_ecotone_fruiting`/`join_ecotone_access`) to read only the columns/rows it needs
+rather than full GeoDataFrames, or to run on a machine with more memory.
 
 ## Planned architecture
 
@@ -426,9 +504,10 @@ score now depends on alongside Metsaregister). The `forest_block`/`macrocluster`
 layer (see "Macroclustering" above) sits beside this score chain, not inside it — it's
 computed straight off `eraldis`/adjacency with no score input, and only rejoins the chain
 at the very end when `rollup_macroclusters.py` groups today's `ScoutScore` export by
-`macrocluster_id`. `compute_forest_blocks.py`'s half of that layer is real and verified at
-production scale; `compute_macroclusters.py`'s half is not yet usable there (see
-"Macroclustering" above for the confirmed real-scale blocker):
+`macrocluster_id`. `compute_forest_blocks.py`'s and `compute_macroclusters.py`'s halves of
+that layer are both real and verified at production scale now; `rollup_macroclusters.py`
+itself (the final join step) is not yet usable at real scale for a separate reason — see
+"Macroclustering" above for the confirmed real-scale OOM finding:
 
 ```
 Metsaregister WFS (GeoServer OWS)
@@ -442,9 +521,9 @@ Metsaregister WFS (GeoServer OWS)
               │
       ┌───────┼─────────┐        forest_block → macrocluster
       │       │         │        (geography only, no scores —
-   habitat  ecotone   access      compute_forest_blocks.py real,
-    score    score     score      compute_macroclusters.py not yet
-      │       │         │         usable at real scale)
+   habitat  ecotone   access      both steps real and verified
+    score    score     score      at real scale; rollup_macro-
+      │       │         │         clusters.py OOMs at real scale)
       └───────┼─────────┘                      │
               ▼                                │
         HabitatScore (static, recomputed rarely)

@@ -2,6 +2,9 @@ from datetime import datetime
 
 import geopandas as gpd
 import networkx as nx
+import numpy as np
+from scipy.cluster.hierarchy import fcluster, linkage
+from scipy.spatial.distance import pdist
 
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS, WGS84_CRS
 from shroom_fm.forest_block import MACROCLUSTER_TARGET_EXTENT_M, geometry_extent_m
@@ -51,55 +54,6 @@ def _dissolve(geoms):
     return gpd.GeoSeries(geoms, crs=ESTONIAN_GRID_CRS).union_all()
 
 
-def _complete_linkage_merge(
-    block_ids: list[int],
-    id_to_centroid: dict,
-    graph: nx.Graph,
-    threshold: float,
-) -> list[list[int]]:
-    """Connectivity-constrained complete-linkage agglomerative clustering,
-    implemented directly rather than via sklearn's AgglomerativeClustering:
-    empirically verified (against scikit-learn 1.9.0, by reading
-    _agglomerative.py's linkage_tree and by side-by-side experiments) that
-    sklearn's connectivity-constrained linkage="complete" does NOT compute
-    true diameter distances for a sparse (non-clique) connectivity graph —
-    it silently uses a hop-weight proxy instead of the real max-over-all-
-    cross-pairs distance, which defeats this algorithm on exactly the chain
-    topology it exists to handle. Repeatedly merges the connectivity-adjacent
-    cluster pair with the smallest true complete-linkage distance, stopping
-    once the smallest remaining connectivity-adjacent pair's distance exceeds
-    `threshold`."""
-    clusters = [{b} for b in block_ids]
-
-    def real_distance(a, b):
-        return id_to_centroid[a].distance(id_to_centroid[b])
-
-    def complete_linkage_distance(cluster_a, cluster_b):
-        return max(real_distance(a, b) for a in cluster_a for b in cluster_b)
-
-    def connectivity_adjacent(cluster_a, cluster_b):
-        return any(graph.has_edge(a, b) for a in cluster_a for b in cluster_b)
-
-    while len(clusters) > 1:
-        best_pair = None
-        best_distance = float("inf")
-        for i in range(len(clusters)):
-            for j in range(i + 1, len(clusters)):
-                if not connectivity_adjacent(clusters[i], clusters[j]):
-                    continue
-                d = complete_linkage_distance(clusters[i], clusters[j])
-                if d < best_distance:
-                    best_distance = d
-                    best_pair = (i, j)
-        if best_pair is None or best_distance > threshold:
-            break
-        i, j = best_pair
-        merged = clusters[i] | clusters[j]
-        clusters = [c for k, c in enumerate(clusters) if k not in (i, j)] + [merged]
-
-    return [sorted(c) for c in clusters]
-
-
 def _partition_component(
     block_ids: list[int],
     id_to_centroid: dict,
@@ -108,30 +62,76 @@ def _partition_component(
     max_extent_m: float,
     depth: int = 0,
 ) -> list[list[int]]:
-    geom = _dissolve([id_to_geom[i] for i in block_ids])
-    if geometry_extent_m(geom) <= max_extent_m:
-        return [block_ids]
+    """Partitions block_ids (already known to be one connected component of
+    `graph`) into groups where every group's real geometry_extent_m is
+    <= max_extent_m AND every group is internally connected via `graph`.
 
-    if len(block_ids) == 1 or depth >= _MAX_REPARTITION_DEPTH:
-        # Either a single block already exceeds max_extent_m on its own (nothing
-        # to partition), or we've recursed too many times — give up and let the
-        # caller flag this group oversized rather than looping indefinitely.
+    Uses scipy's global complete-linkage clustering (vectorized, O(n^2) via
+    scipy's NN-chain algorithm — not the O(n^4)-class from-scratch loop this
+    replaces) as a fast centroid-distance-based first pass, computed WITHOUT
+    any connectivity restriction in the clustering step itself (this is what
+    avoids reproducing the correctness bug found in
+    sklearn.cluster.AgglomerativeClustering's connectivity-constrained
+    linkage="complete", which silently used partial/incomplete distance info
+    for non-graph-adjacent pairs — see this module's docstring history).
+    Connectivity is instead enforced as a separate, simple post-hoc check:
+    any resulting flat cluster that isn't actually graph-connected gets split
+    into its real connected sub-components (splitting only removes members,
+    so this can only shrink geometry_extent_m, never re-exceed the cap — no
+    extent re-check needed after a connectivity split). A resulting group
+    whose REAL geometry_extent_m still exceeds the cap (centroid distance can
+    be optimistic for large/elongated blocks) is recursively repartitioned
+    with a shrunk threshold — hierarchical clustering's monotonicity property
+    (a strictly smaller threshold can only produce equal-or-more-refined
+    groups, never fewer) guarantees this makes progress and terminates.
+    """
+    if len(block_ids) == 1:
+        return [block_ids]
+    if depth >= _MAX_REPARTITION_DEPTH:
         return [block_ids]
 
     threshold = max_extent_m * (_REPARTITION_SHRINK_FACTOR**depth)
-    groups = _complete_linkage_merge(block_ids, id_to_centroid, graph, threshold)
+    ordered_ids = sorted(block_ids)
+
+    if len(ordered_ids) == 2:
+        # scipy's linkage() requires at least 3 observations; handle the
+        # 2-point case directly.
+        a, b = ordered_ids
+        dist = id_to_centroid[a].distance(id_to_centroid[b])
+        centroid_groups = [[a, b]] if dist <= threshold else [[a], [b]]
+    else:
+        coords = np.array(
+            [[id_to_centroid[i].x, id_to_centroid[i].y] for i in ordered_ids]
+        )
+        condensed = pdist(coords, metric="euclidean")
+        Z = linkage(condensed, method="complete")
+        labels = fcluster(Z, t=threshold, criterion="distance")
+        groups_by_label: dict[int, list[int]] = {}
+        for block_id, label in zip(ordered_ids, labels):
+            groups_by_label.setdefault(label, []).append(block_id)
+        centroid_groups = list(groups_by_label.values())
 
     result = []
-    for group_block_ids in groups:
-        group_geom = _dissolve([id_to_geom[i] for i in group_block_ids])
-        if geometry_extent_m(group_geom) <= max_extent_m:
-            result.append(group_block_ids)
-        else:
+    for group in centroid_groups:
+        if len(group) == 1:
+            result.append(group)
+            continue
+        geom = _dissolve([id_to_geom[i] for i in group])
+        if geometry_extent_m(geom) > max_extent_m:
             result.extend(
                 _partition_component(
-                    group_block_ids, id_to_centroid, id_to_geom, graph, max_extent_m, depth + 1
+                    group, id_to_centroid, id_to_geom, graph, max_extent_m, depth + 1
                 )
             )
+            continue
+        connected_groups = [
+            sorted(c) for c in nx.connected_components(graph.subgraph(group))
+        ]
+        if len(connected_groups) == 1:
+            result.append(group)
+        else:
+            result.extend(connected_groups)
+
     return result
 
 

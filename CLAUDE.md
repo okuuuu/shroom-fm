@@ -58,15 +58,17 @@ super-component Estonia's real forest density produces at this layer's proximity
 vectorized global complete-linkage clustering plus a simple post-hoc `networkx`
 connectivity-split, and now completes in **6m1s real time, producing 22 macroclusters from
 the 11,658 forest blocks, 0 flagged `oversized_macrocluster`**; see "Macroclustering" below
-for the full before/after diagnosis. `scripts/rollup_macroclusters.py` can now run (it no
-longer lacks its `data/macroclusters.geojson` input), but real-scale verification of *that*
-script surfaced a separate, new problem: it OOM-kills (reproduced twice, exit 137 both
-times) on this 7.7GB machine while loading `data/eraldis.geojson` (787MB),
-`data/ecotones.geojson` (**3.15GB** on disk), and `data/weather_eraldis.geojson` (1.1GB) all
-at once — unrelated to the macrocluster-partitioning algorithm fix (this script and its
-`join_ecotone_fruiting`/`join_ecotone_access` dependencies were not touched by that fix); see
-"Macroclustering" below for details. `data/macrocluster_state.geojson` has therefore still
-never been produced against real data. Still deferred: personal observation history and a
+for the full before/after diagnosis. `scripts/rollup_macroclusters.py` initially OOM-killed
+at real scale (reproduced twice, exit 137 both times) by loading `data/eraldis.geojson`
+(787MB), `data/ecotones.geojson` (**3.15GB** on disk), and `data/weather_eraldis.geojson`
+(1.1GB) fully into memory via `gpd.read_file()` before any filtering — **this has since
+been fixed** by reading those three inputs via `pyogrio.read_dataframe(path,
+columns=[...], read_geometry=False)` with an explicit minimal per-file column list instead,
+since none of `join_ecotone_access`/`join_ecotone_fruiting`/`rollup_daily_state` touch
+geometry or need more than a handful of columns from each; the script now completes in
+**2m12s real time against real data, producing 22 macrocluster states with 0
+cross-macrocluster ecotones**; see "Macroclustering" below for the full fix and real-scale
+verification. Still deferred: personal observation history and a
 landscape-mosaic diversity bonus — neither exists yet, and `ScoutScore` v1 simply omits
 them from its formula rather than faking neutral placeholder values for them. This file
 documents the target architecture so implementation stays consistent; update it as more of
@@ -118,10 +120,8 @@ branches done; step 11 needs everything upstream; step 12 needs step 5 and step 
 12. `uv run python scripts/rollup_macroclusters.py` — joins today's
     `data/scout_candidates.geojson` (step 11) against `data/macroclusters.geojson` (step 5)
     for a per-macrocluster daily snapshot → `data/macrocluster_state.geojson` (needs steps 5
-    and 11 already done — step 5's blocker is fixed, but **this step now OOM-kills at real
-    scale for a separate, unrelated reason** — loading `data/eraldis.geojson` +
-    `data/ecotones.geojson` (3.15GB) + `data/weather_eraldis.geojson` all at once exceeds
-    this 7.7GB machine's memory; see "Macroclustering" below).
+    and 11 already done). **Fixed and verified at production scale** (2m12s real time, 22
+    macrocluster states, 0 cross-macrocluster ecotones) — see "Macroclustering" below.
 
 At real scale (262,054 stands, 82,731 road segments, 1,878 barriers within the current
 33-70km/37km-wide annulus around home): steps 1 (`download_eraldis`), 2 (`enrich_eraldis`),
@@ -140,9 +140,10 @@ radius yielding more roads/barriers than before). Step 3 is fast (local computat
 the scipy-based fix described in "Macroclustering" below, took **6m1s** real time (22
 macroclusters, 0 oversized). Steps 6-8 are fast (local computation), step 10 takes well
 under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step
-11 is near-instant. Step 12 (`rollup_macroclusters`) is still unverified at real scale — it
-OOM-kills (reproduced twice) for a separate, unrelated memory-scaling reason; see
-"Macroclustering" below.
+11 is near-instant. Step 12 (`rollup_macroclusters`) initially OOM-killed at real scale
+(reproduced twice) for a separate, unrelated memory-scaling reason, but after the
+column-subset read fix now completes in **2m12s real time** (22 macrocluster states, 0
+cross-macrocluster ecotones); see "Macroclustering" below.
 
 Note: the road/barrier counts above (82,731 / 1,878) are higher than an earlier plan
 document's "50,008 roads, 1,564 barriers" figure — that figure was measured at the old
@@ -473,26 +474,79 @@ blocks lost or double-counted). `within_target_block_count` is `False` for all 2
 diagnostic-only (never enforced) and was calibrated for a much less densely-connected
 scenario than Estonia's real forest cover turned out to produce.
 
-**New, separate finding: `scripts/rollup_macroclusters.py` OOM-kills at real scale, for a
-reason unrelated to the macrocluster-partitioning algorithm.** With
+**Round 3 (2026-08-20, since fixed): `scripts/rollup_macroclusters.py` OOM-killed at real
+scale, for a reason unrelated to the macrocluster-partitioning algorithm.** With
 `data/macroclusters.geojson` now real, `rollup_macroclusters.py` was run against real data
-for the first time. It was killed by the OS OOM-killer twice in a row (`dmesg` confirms
+for the first time. It was killed by the OS OOM-killer twice in a row (`dmesg` confirmed
 both: `Out of memory: Killed process ... python3 ... anon-rss:5776332kB` /
-`anon-rss:5782464kB`, exit code 137 both times, no output file produced either time). The
-likely cause: this script loads `data/eraldis.geojson` (787MB on disk), the real
-`data/ecotones.geojson` (**3.15GB** on disk — far larger than the other pipeline files),
-and `data/weather_eraldis.geojson` (1.1GB) fully into memory via `gpd.read_file()` before
-doing any filtering, on a machine with only 7.7GB RAM + 2GB swap. This is **not** a
-consequence of the Round 2 clustering fix — `rollup_macroclusters.py`,
-`rollup_daily_state`, `join_ecotone_fruiting`, and `join_ecotone_access` were not touched
-by that fix — it's a pre-existing memory-scaling limitation of the rollup step that this
-task happened to be the first to exercise against real data end-to-end. It remains
-unfixed and undiagnosed beyond this: `data/macrocluster_state.geojson` has never been
-produced against real data, so the `cross_macrocluster_ecotone_count` real count and the
-`data/macrocluster_state.geojson`-vs-`data/scout_candidates.geojson` spot-check remain
-outstanding. A real fix would likely need `rollup_macroclusters.py` (or
-`join_ecotone_fruiting`/`join_ecotone_access`) to read only the columns/rows it needs
-rather than full GeoDataFrames, or to run on a machine with more memory.
+`anon-rss:5782464kB`, exit code 137 both times, no output file produced either time). Root
+cause, confirmed by reading the actual code (not guessed): the script loaded
+`data/eraldis.geojson` (787MB on disk), the real `data/ecotones.geojson` (**3.15GB** on
+disk — far larger than the other pipeline files), and `data/weather_eraldis.geojson`
+(1.1GB) fully into memory via `gpd.read_file()` before doing any filtering, on a machine
+with only 7.7GB RAM + 2GB swap — ~5GB of GeoDataFrames before any actual processing
+started. This was **not** a consequence of the Round 2 clustering fix —
+`rollup_macroclusters.py`, `rollup_daily_state`, `join_ecotone_fruiting`, and
+`join_ecotone_access` were not touched by that fix — it was a pre-existing memory-scaling
+limitation of the rollup step that this task happened to be the first to exercise against
+real data end-to-end.
+
+**The fix:** none of `join_ecotone_access` (`src/shroom_fm/scout.py`),
+`join_ecotone_fruiting` (`src/shroom_fm/fruiting.py`), or `rollup_daily_state`
+(`src/shroom_fm/macrocluster.py`) touch geometry anywhere, or need more than a small,
+specific column subset from each of the three large inputs — confirmed by reading all
+three functions and cross-checking every intended column name against
+`pyogrio.read_info(path)["fields"]` for the real files before writing any code (all names
+matched; no surprises — e.g. `ecotone_score_{species}`, `fruiting_score_{species}`,
+`weather_data_quality`/`weather_data_coverage`/`as_of` are exactly as named in the real
+files). `scripts/rollup_macroclusters.py` now reads `data/eraldis.geojson`,
+`data/ecotones.geojson`, and `data/weather_eraldis.geojson` via
+`pyogrio.read_dataframe(path, columns=[...], read_geometry=False)` — returning plain
+`pd.DataFrame`s instead of `gpd.GeoDataFrame`s — with an explicit minimal column list per
+file (`ERALDIS_COLUMNS`/`ECOTONES_COLUMNS`/`WEATHER_COLUMNS` constants in the script:
+`id`+`macrocluster_id`+`ACCESS_COLUMNS` for eraldis; `id_a`/`id_b`+`ecotone_score_*` for
+ecotones; `id`+`fruiting_score_*`+the three weather-meta columns for weather). Since
+`join_ecotone_access`/`join_ecotone_fruiting`/`rollup_daily_state` only ever call standard
+pandas operations on these inputs (`.set_index()`, `.copy()`, dict/zip lookups, boolean
+indexing — never anything geometry-specific), passing plain DataFrames instead of
+GeoDataFrames works identically at runtime with zero changes needed to those three
+functions. `scout_candidates_gdf`/`macroclusters_gdf` (small, and `macroclusters_gdf`'s
+geometry is genuinely needed for the final output) were left as ordinary `gpd.read_file()`
+calls, unchanged.
+
+Measured memory impact (biggest file, `data/ecotones.geojson`, 3.15GB on disk, 493,499
+rows): reading just the 7-column subset (`id_a`, `id_b`, 5×`ecotone_score_*`) with
+`read_geometry=False` produced a DataFrame of **23.7MB** (`memory_usage(deep=True).sum()`)
+with peak process RSS of **~191MB** (`/usr/bin/time -v`) — vs. loading the full file (29
+columns including `composition`-style nested data plus ~493k polygon-boundary geometries)
+being the actual cause of the prior 5.7-5.8GB RSS OOM kill. The full-file "before" number
+was not re-measured directly (re-triggering the OOM on purpose on this same 7.7GB/555MB-free
+machine wasn't worth the risk), but 7 of 29 columns with geometry entirely excluded from a
+file whose size is dominated by ~493k boundary-line geometries is consistent with the
+observed multi-GB → sub-200MB reduction.
+
+**Real-scale verification after the fix, 2026-08-20:** `time uv run python
+scripts/rollup_macroclusters.py` against the real `data/eraldis.geojson`,
+`data/ecotones.geojson`, `data/weather_eraldis.geojson`, `data/scout_candidates.geojson`,
+and `data/macroclusters.geojson` completed in **real 2m12.378s** (`user 2m11.307s`, `sys
+0m2.467s`) with peak process RSS observed via `ps` staying under ~500MB throughout (no OOM
+risk), printing: `22 macrocluster states rolled up, 0 cross-macrocluster ecotones
+(diagnostic), saved to data/macrocluster_state.geojson`. `data/macrocluster_state.geojson`
+now exists for the first time against real data (22 rows, one per macrocluster, 29
+columns). Spot-check against `data/scout_candidates.geojson`: for every one of the 5
+`TARGET_SPECIES`, all 10 real `tier == "ranked"` candidates fall in `macrocluster_id == 16`
+(the macrocluster nearest home, unsurprising since `ScoutScore` ranks by
+access-modifier-weighted score and home-proximity dominates access), and
+`macrocluster_id == 16`'s row in `data/macrocluster_state.geojson` shows
+`today_ranked_count_{species} == 10` for all 5 species, exactly matching — no
+double-counting or dropped candidates. All 21 other macroclusters correctly show
+`today_ranked_count_{species} == 0` for every species (no ranked candidates fell there
+today). `cross_macrocluster_ecotone_count` is `0` for all 22 macroclusters — plausible
+since `touching`/`near_gap` adjacency (which ecotones are built from) almost always keeps
+both stands of a pair inside the same `forest_block`, hence the same `macrocluster`.
+`data/macrocluster_state.geojson` has therefore now been produced and spot-checked against
+real data end-to-end. The full 247-test suite passes unchanged (this fix touches only the
+thin `rollup_macroclusters.py` orchestrator script, which has no dedicated tests).
 
 ## Planned architecture
 
@@ -506,8 +560,8 @@ computed straight off `eraldis`/adjacency with no score input, and only rejoins 
 at the very end when `rollup_macroclusters.py` groups today's `ScoutScore` export by
 `macrocluster_id`. `compute_forest_blocks.py`'s and `compute_macroclusters.py`'s halves of
 that layer are both real and verified at production scale now; `rollup_macroclusters.py`
-itself (the final join step) is not yet usable at real scale for a separate reason — see
-"Macroclustering" above for the confirmed real-scale OOM finding:
+itself (the final join step) is also now real and verified at production scale — see
+"Macroclustering" above for the OOM finding and its fix:
 
 ```
 Metsaregister WFS (GeoServer OWS)
@@ -521,9 +575,9 @@ Metsaregister WFS (GeoServer OWS)
               │
       ┌───────┼─────────┐        forest_block → macrocluster
       │       │         │        (geography only, no scores —
-   habitat  ecotone   access      both steps real and verified
-    score    score     score      at real scale; rollup_macro-
-      │       │         │         clusters.py OOMs at real scale)
+   habitat  ecotone   access      all steps, including rollup_
+    score    score     score      macroclusters.py, real and
+      │       │         │         verified at real scale)
       └───────┼─────────┘                      │
               ▼                                │
         HabitatScore (static, recomputed rarely)

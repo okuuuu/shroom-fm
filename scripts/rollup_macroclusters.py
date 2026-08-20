@@ -2,10 +2,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import geopandas as gpd
+import pyogrio
 
 from shroom_fm.fruiting import join_ecotone_fruiting
+from shroom_fm.habitat import TARGET_SPECIES
 from shroom_fm.macrocluster import rollup_daily_state
-from shroom_fm.scout import join_ecotone_access
+from shroom_fm.scout import ACCESS_COLUMNS, join_ecotone_access
 
 ERALDIS_PATH = Path("data/eraldis.geojson")
 ECOTONES_PATH = Path("data/ecotones.geojson")
@@ -14,11 +16,34 @@ SCOUT_CANDIDATES_PATH = Path("data/scout_candidates.geojson")
 MACROCLUSTERS_PATH = Path("data/macroclusters.geojson")
 OUTPUT_PATH = Path("data/macrocluster_state.geojson")
 
+# These three inputs are large full-featured GeoJSON files (eraldis.geojson 787MB,
+# ecotones.geojson 3.15GB, weather_eraldis.geojson 1.1GB on disk) but none of the
+# functions below (join_ecotone_access, join_ecotone_fruiting, rollup_daily_state) touch
+# geometry or need any column beyond this small subset — loading them as full
+# GeoDataFrames via gpd.read_file() pulls in every column and every geometry for no
+# reason and OOMs on a 7.7GB machine. Read only the needed columns, with no geometry, via
+# pyogrio directly instead.
+ERALDIS_COLUMNS = ["id", "macrocluster_id", *ACCESS_COLUMNS]
+ECOTONES_COLUMNS = ["id_a", "id_b", *[f"ecotone_score_{species}" for species in TARGET_SPECIES]]
+WEATHER_COLUMNS = [
+    "id",
+    *[f"fruiting_score_{species}" for species in TARGET_SPECIES],
+    "weather_data_quality",
+    "weather_data_coverage",
+    "as_of",
+]
+
 
 def main() -> None:
-    eraldis_gdf = gpd.read_file(ERALDIS_PATH)
-    ecotones_gdf = gpd.read_file(ECOTONES_PATH)
-    weather_gdf = gpd.read_file(WEATHER_PATH)
+    eraldis_gdf = pyogrio.read_dataframe(
+        ERALDIS_PATH, columns=ERALDIS_COLUMNS, read_geometry=False
+    )
+    ecotones_gdf = pyogrio.read_dataframe(
+        ECOTONES_PATH, columns=ECOTONES_COLUMNS, read_geometry=False
+    )
+    weather_gdf = pyogrio.read_dataframe(
+        WEATHER_PATH, columns=WEATHER_COLUMNS, read_geometry=False
+    )
     scout_candidates_gdf = gpd.read_file(SCOUT_CANDIDATES_PATH)
     macroclusters_gdf = gpd.read_file(MACROCLUSTERS_PATH)
 

@@ -271,9 +271,30 @@ def rollup_daily_state(
                 record[f"today_top_target_id_{species}"] = (
                     f"{sorted_ranked.iloc[0]['id_a']}_{sorted_ranked.iloc[0]['id_b']}"
                 )
-            record[f"today_weather_coverage_{species}"] = weather_coverage_ratio(
-                cluster_joined, species
+            # weather_coverage_ratio() deliberately fails open to 1.0 for an empty
+            # eligible pool — correct for its ORIGINAL caller
+            # (export_scout_candidates.py's MIN_SCOUT_WEATHER_COVERAGE publish-refusal
+            # guard, where an empty macro-scale pool shouldn't block a species'
+            # ranking). But here it's a REPORTED METRIC for one specific macrocluster,
+            # and a 1.0 for a cluster with zero eligible ecotones for this species reads
+            # as "100% weather coverage" when the truth is "no data to have coverage
+            # over at all" — a fabrication this project's discipline forbids. Check the
+            # eligible pool size locally (deliberately not touching
+            # scout.weather_coverage_ratio itself, whose fail-open behavior is correct
+            # and load-bearing for its original caller) and report None instead.
+            ecotone_col = f"ecotone_score_{species}"
+            eligible_pool_size = len(
+                cluster_joined[
+                    cluster_joined[ecotone_col].notna()
+                    & (cluster_joined["scout_eligible"] == True)  # noqa: E712
+                ]
             )
+            if eligible_pool_size == 0:
+                record[f"today_weather_coverage_{species}"] = None
+            else:
+                record[f"today_weather_coverage_{species}"] = weather_coverage_ratio(
+                    cluster_joined, species
+                )
 
         records.append(record)
 

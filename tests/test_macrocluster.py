@@ -440,6 +440,84 @@ def test_rollup_daily_state_cluster_with_zero_candidates_gets_none_not_zero():
     assert row["today_top_target_id_chanterelle"] is None
 
 
+def test_rollup_daily_state_weather_coverage_is_none_for_empty_eligible_pool():
+    # Regression test for Finding 2: scout.weather_coverage_ratio() intentionally
+    # fails open to 1.0 for an empty eligible pool (correct for its original caller,
+    # export_scout_candidates.py's publish-refusal guard), but rollup_daily_state
+    # reports this as a per-macrocluster METRIC, where a 1.0 for zero eligible
+    # ecotones would read as fabricated "100% coverage" instead of "no data". Every
+    # row here has scout_eligible=False for chanterelle, so the eligible pool
+    # (ecotone_score notna AND scout_eligible == True) is empty.
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [10, 10]},
+        geometry=[Point(0, 0)] * 2,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1],
+            "id_b": [2],
+            # chanterelle_eligible=[False] -> eligible pool is empty for chanterelle
+            **_joined_columns(1, [1.0], [False], [0.6]),
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_weather_coverage_chanterelle"] is None
+
+
+def test_rollup_daily_state_weather_coverage_is_none_when_no_ecotones_in_cluster():
+    # Same fabrication risk when the cluster has zero joined rows at all (not just
+    # zero eligible ones) — must still report None, not 1.0.
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1], "macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [],
+            "id_b": [],
+            **_joined_columns(0, [], [], []),
+        },
+        geometry=[],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_weather_coverage_chanterelle"] is None
+
+
 def test_rollup_daily_state_counts_cross_macrocluster_ecotones():
     import geopandas as gpd
     from shapely.geometry import Point

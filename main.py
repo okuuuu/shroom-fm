@@ -15,6 +15,7 @@ from scripts import (
     download_roads,
     enrich_eraldis,
     export_scout_candidates,
+    rollup_macroclusters,
     score_access,
     score_ecotone_fruiting,
     score_ecotone_habitat,
@@ -37,6 +38,7 @@ STEPS = [
     ("score_fruiting", score_fruiting.main),
     ("score_ecotone_fruiting", score_ecotone_fruiting.main),
     ("export_scout_candidates", export_scout_candidates.main),
+    ("rollup_macroclusters", rollup_macroclusters.main),
 ]
 
 

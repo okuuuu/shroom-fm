@@ -10,7 +10,7 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-9 done, including `FruitingScore`.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+**Status: MVP steps 1-8 done, plus `FruitingScore`.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
 `config.py` (home location loading), `eraldis.py` (server-side CQL annulus download via
 `fetch_eraldis_annulus`), `cql.py` (shared `estonian_grid_point`/`annulus_filter` helpers
 that build the `DWITHIN`/`BEYOND` CQL_FILTER string used by both the eraldis and roads
@@ -26,10 +26,10 @@ and kasvukoht site-type suitability, kept as two distinct scores rather than one
 `HabitatScore`), `roads.py` (ETAK road/barrier WFS fetch, `car_class` classification of road
 segments, and barrier-snap exclusion of segments near a permanently-closed barrier),
 `access.py` (per-eraldis `AccessScore` from nearest-road distances, additive-only onto
-`data/eraldis.geojson`), and `scout.py` (`ScoutScore` v0 — joins each ecotone to its two
+`data/eraldis.geojson`), and `scout.py` (`ScoutScore` v1 — joins each ecotone to its two
 stands' `AccessScore`, taking `access_modifier = max(access_score_a, access_score_b)` and
 splitting candidates per species into a `ranked` tier, `scout_score = ecotone_score ×
-access_modifier`, and a `remote_high_value` tier for ecologically-strong candidates the v1
+access_modifier × fruiting_modifier`, and a `remote_high_value` tier for ecologically-strong candidates the v1
 access distance-proxy couldn't confirm a nearby road for — never a fabricated `0` or floor,
 see `docs/superpowers/specs/2026-08-17-scout-candidates-export-design.md`). All scripts are
 runnable — see "Running the full pipeline" below for the exact command sequence and

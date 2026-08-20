@@ -154,9 +154,13 @@ SEASON_PRIORS = {
 
 def _month_day_to_ordinal(month_day: str) -> int:
     month, day = (int(part) for part in month_day.split("-"))
-    # Fixed non-leap reference year — no SEASON_PRIORS knot falls on Feb 29, so any
-    # non-leap year gives a consistent, comparable day-of-year ordinal.
-    return _datetime.date(2001, month, day).toordinal()
+    # Fixed leap-year reference year (2000): the *target* month_day passed to
+    # season_prior comes from the real wall clock (now.strftime("%m-%d")), and a
+    # real Feb 29 does occur — a non-leap reference year would raise ValueError on
+    # that input. Any leap year works equally well as a reference for relative
+    # ordinal comparison, as long as it's used consistently for both the knot
+    # table and the target date, which it is (both go through this function).
+    return _datetime.date(2000, month, day).toordinal()
 
 
 def season_prior(species: str, month_day: str) -> float:
@@ -176,6 +180,11 @@ def season_prior(species: str, month_day: str) -> float:
     return knots[-1][1]
 
 
+# Internal sentinel distinguishing "caller didn't pass this" from "caller passed
+# None (a real missing-data value)" for fruiting_score's precomputed-* kwargs below.
+_UNSET = object()
+
+
 def fruiting_score(
     species: str,
     month_day: str,
@@ -187,13 +196,38 @@ def fruiting_score(
     rh_night_mean_3d: float | None,
     wet_hours_72h: float | None,
     hours_since_significant_rain: float | None,
+    *,
+    _precomputed_temperature=_UNSET,
+    _precomputed_persistence=_UNSET,
+    _precomputed_season=_UNSET,
 ) -> tuple[float | None, dict]:
+    """Compute FruitingScore for one (species, row) pair.
+
+    The three leading-underscore keyword-only params are an internal performance
+    escape hatch for score_stands (below), which already computes
+    temperature_modifier/persistence_modifier once per row (shared across all 5
+    species) and season_prior once per species (constant for the whole run) —
+    passing them in here avoids recomputing the same value 5x per row. Not part
+    of this function's public contract: every positional-only caller (including
+    all existing tests) is unaffected and gets the original from-scratch
+    computation.
+    """
     moisture = moisture_trigger(species, rain_0_3d, rain_3_7d, rain_7_14d)
-    temperature = temperature_modifier(temp_mean_3d, temp_night_mean_3d)
-    persistence = persistence_modifier(
-        rh_night_mean_3d, wet_hours_72h, hours_since_significant_rain
+    temperature = (
+        temperature_modifier(temp_mean_3d, temp_night_mean_3d)
+        if _precomputed_temperature is _UNSET
+        else _precomputed_temperature
     )
-    season = season_prior(species, month_day)
+    persistence = (
+        persistence_modifier(rh_night_mean_3d, wet_hours_72h, hours_since_significant_rain)
+        if _precomputed_persistence is _UNSET
+        else _precomputed_persistence
+    )
+    season = (
+        season_prior(species, month_day)
+        if _precomputed_season is _UNSET
+        else _precomputed_season
+    )
 
     components = {
         "fruiting_moisture_score": moisture,
@@ -212,38 +246,71 @@ def score_stands(weather_gdf: "gpd.GeoDataFrame", now) -> "gpd.GeoDataFrame":
     result = weather_gdf.copy()
     month_day = now.strftime("%m-%d")
 
-    temp_modifiers = []
-    persistence_modifiers = []
-    for _, row in result.iterrows():
-        temp_modifiers.append(
-            temperature_modifier(row["temp_mean_3d"], row["temp_night_mean_3d"])
+    # Computed once per row (shared across all 5 species) via the zip()-over-
+    # columns idiom used elsewhere in this codebase (habitat.score_stands,
+    # scout.scout_candidates_for_species) instead of iterrows(), which builds a
+    # full pandas Series per row.
+    temp_modifiers = [
+        temperature_modifier(temp_mean_3d, temp_night_mean_3d)
+        for temp_mean_3d, temp_night_mean_3d in zip(
+            result["temp_mean_3d"], result["temp_night_mean_3d"]
         )
-        persistence_modifiers.append(
-            persistence_modifier(
-                row["rh_night_mean_3d"],
-                row["wet_hours_72h"],
-                row["hours_since_significant_rain"],
-            )
+    ]
+    persistence_modifiers = [
+        persistence_modifier(rh_night_mean_3d, wet_hours_72h, hours_since_significant_rain)
+        for rh_night_mean_3d, wet_hours_72h, hours_since_significant_rain in zip(
+            result["rh_night_mean_3d"],
+            result["wet_hours_72h"],
+            result["hours_since_significant_rain"],
         )
+    ]
     result["fruiting_temperature_modifier"] = temp_modifiers
     result["fruiting_persistence_modifier"] = persistence_modifiers
 
     for species in TARGET_SPECIES:
+        # season_prior depends only on (species, month_day) — both fixed for this
+        # entire run — so compute it once per species (5 total), not once per row.
+        season = season_prior(species, month_day)
         scores = []
         moisture_scores = []
         season_priors = []
-        for _, row in result.iterrows():
+        for (
+            rain_0_3d,
+            rain_3_7d,
+            rain_7_14d,
+            temp_mean_3d,
+            temp_night_mean_3d,
+            rh_night_mean_3d,
+            wet_hours_72h,
+            hours_since_significant_rain,
+            temp_mod,
+            pers_mod,
+        ) in zip(
+            result["rain_0_3d_mm"],
+            result["rain_3_7d_mm"],
+            result["rain_7_14d_mm"],
+            result["temp_mean_3d"],
+            result["temp_night_mean_3d"],
+            result["rh_night_mean_3d"],
+            result["wet_hours_72h"],
+            result["hours_since_significant_rain"],
+            temp_modifiers,
+            persistence_modifiers,
+        ):
             score, components = fruiting_score(
                 species,
                 month_day,
-                row["rain_0_3d_mm"],
-                row["rain_3_7d_mm"],
-                row["rain_7_14d_mm"],
-                row["temp_mean_3d"],
-                row["temp_night_mean_3d"],
-                row["rh_night_mean_3d"],
-                row["wet_hours_72h"],
-                row["hours_since_significant_rain"],
+                rain_0_3d,
+                rain_3_7d,
+                rain_7_14d,
+                temp_mean_3d,
+                temp_night_mean_3d,
+                rh_night_mean_3d,
+                wet_hours_72h,
+                hours_since_significant_rain,
+                _precomputed_temperature=temp_mod,
+                _precomputed_persistence=pers_mod,
+                _precomputed_season=season,
             )
             scores.append(score)
             moisture_scores.append(components["fruiting_moisture_score"])
@@ -260,6 +327,25 @@ def _none_if_nan(value):
     return None if pd.isna(value) else value
 
 
+_WEATHER_META_SOURCE_COLUMNS = ("weather_data_quality", "weather_data_coverage", "as_of")
+
+
+def _worst_quality(quality_a: str, quality_b: str) -> str:
+    """Report the more-degraded of two per-stand weather_data_quality strings.
+
+    "complete" always loses to any non-complete (degraded) value. If both stands
+    are degraded with different flag strings, pick a deterministic (lexicographic)
+    tie-break rather than an arbitrary/order-dependent one.
+    """
+    if quality_a == quality_b:
+        return quality_a
+    if quality_a == "complete":
+        return quality_b
+    if quality_b == "complete":
+        return quality_a
+    return min(quality_a, quality_b)
+
+
 def join_ecotone_fruiting(
     ecotones_gdf: "gpd.GeoDataFrame", weather_gdf: "gpd.GeoDataFrame"
 ) -> "gpd.GeoDataFrame":
@@ -267,8 +353,13 @@ def join_ecotone_fruiting(
 
     for species in TARGET_SPECIES:
         score_col = f"fruiting_score_{species}"
-        # Only process if this species column exists in weather_gdf
+        # If weather_gdf lacks this species' column (e.g. score_fruiting.py hasn't
+        # been re-run since the last refresh_weather.py run), the absence must
+        # propagate as an explicit None for every row — never silently preserve a
+        # stale fruiting_modifier_{species} value already present in `result` from
+        # a previous run of this function against `ecotones_gdf`.
         if score_col not in weather_gdf.columns:
+            result[f"fruiting_modifier_{species}"] = None
             continue
         scores_by_id = dict(zip(weather_gdf["id"], weather_gdf[score_col]))
         modifiers = []
@@ -280,5 +371,47 @@ def join_ecotone_fruiting(
             else:
                 modifiers.append((score_a + score_b) / 2.0)
         result[f"fruiting_modifier_{species}"] = modifiers
+
+    # weather_data_quality/weather_data_coverage/weather_as_of: species-independent,
+    # per-stand columns carried from weather_gdf onto the ecotone as a "worst of the
+    # two adjacent stands" summary, so a MISSING_FRUITING_DATA row in the final
+    # export is self-explanatory without cross-referencing weather_eraldis.geojson.
+    if not set(_WEATHER_META_SOURCE_COLUMNS) <= set(weather_gdf.columns):
+        result["weather_data_quality"] = None
+        result["weather_data_coverage"] = None
+        result["weather_as_of"] = None
+        return result
+
+    quality_by_id = dict(zip(weather_gdf["id"], weather_gdf["weather_data_quality"]))
+    coverage_by_id = dict(zip(weather_gdf["id"], weather_gdf["weather_data_coverage"]))
+    as_of_by_id = dict(zip(weather_gdf["id"], weather_gdf["as_of"]))
+
+    qualities, coverages, as_ofs = [], [], []
+    for id_a, id_b in zip(result["id_a"], result["id_b"]):
+        quality_a = _none_if_nan(quality_by_id.get(id_a))
+        quality_b = _none_if_nan(quality_by_id.get(id_b))
+        coverage_a = _none_if_nan(coverage_by_id.get(id_a))
+        coverage_b = _none_if_nan(coverage_by_id.get(id_b))
+        as_of_a = _none_if_nan(as_of_by_id.get(id_a))
+        as_of_b = _none_if_nan(as_of_by_id.get(id_b))
+
+        # Never fabricate a one-sided value: if either stand's id is missing
+        # entirely from weather_gdf (or its value is null), report None — same
+        # discipline as fruiting_modifier_{species} above.
+        qualities.append(
+            None if quality_a is None or quality_b is None
+            else _worst_quality(quality_a, quality_b)
+        )
+        coverages.append(
+            None if coverage_a is None or coverage_b is None
+            else min(coverage_a, coverage_b)
+        )
+        as_ofs.append(
+            None if as_of_a is None or as_of_b is None else min(as_of_a, as_of_b)
+        )
+
+    result["weather_data_quality"] = qualities
+    result["weather_data_coverage"] = coverages
+    result["weather_as_of"] = as_ofs
 
     return result

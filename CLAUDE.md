@@ -45,7 +45,18 @@ features into a per-species, per-date `SeasonPrior × MoistureTrigger × Tempera
 `fruiting_score_*`), and `ScoutScore` v1 now multiplies in a third `fruiting_modifier`
 factor (`scout_score = ecotone_score × access_modifier × fruiting_modifier`) alongside a
 `MISSING_FRUITING_DATA` exclusion reason and a run-level `MIN_SCOUT_WEATHER_COVERAGE`
-guard — see that section for details. Still deferred: personal observation history and a
+guard — see that section for details. A geography-only grouping layer sitting between raw
+`eraldis` and all of the above — `forest_block` → `macrocluster` (see "Macroclustering"
+below) — has also landed as code (`src/shroom_fm/forest_block.py`,
+`src/shroom_fm/macrocluster.py`) and is wired into `main.py`. **Real-scale verification
+against the full 262,054-stand dataset on 2026-08-20 found `scripts/compute_forest_blocks.py`
+real and working** (11,658 forest blocks, 2m8.7s), **but found `scripts/compute_macroclusters.py`
+does not complete at real scale** — its connectivity-constrained partitioning step is
+algorithmically too expensive for the single, all-262,054-stand-spanning super-component
+Estonia's real forest density produces at this layer's proximity threshold; see
+"Macroclustering" below for the full diagnosis. `scripts/rollup_macroclusters.py` is
+consequently unverified too, since it depends on `compute_macroclusters.py`'s output
+(`data/macroclusters.geojson`). Still deferred: personal observation history and a
 landscape-mosaic diversity bonus — neither exists yet, and `ScoutScore` v1 simply omits
 them from its formula rather than faking neutral placeholder values for them. This file
 documents the target architecture so implementation stays consistent; update it as more of
@@ -56,9 +67,10 @@ the pipeline lands.
 Unit tests (fast, no network): `uv run pytest tests/`
 
 Real pipeline (hits live WFS endpoints; needs `config.toml` with home coordinates — copy
-`config.example.toml` and fill in `home_lat`/`home_lon`). Steps 1-6 and step 7 are
-independent of each other (either branch can run first, or in parallel); step 8 needs both
-branches done; step 9 needs everything upstream:
+`config.example.toml` and fill in `home_lat`/`home_lon`). Steps 1-6 and step 9 are
+independent of each other (either branch can run first, or in parallel); step 10 needs both
+branches done; step 11 needs everything upstream; step 12 needs step 5 and step 11 done
+(this is `main.py`'s real `STEPS` order — see below):
 
 1. `uv run python scripts/download_eraldis.py` — Metsaregister stands within home radius →
    `data/eraldis.geojson` (`RADIUS_KM`/`INNER_RADIUS_KM` script constants; currently a
@@ -67,36 +79,57 @@ branches done; step 9 needs everything upstream:
    labels onto `data/eraldis.geojson`
 3. `uv run python scripts/compute_adjacency.py` — find adjacent stand pairs →
    `data/adjacency.geojson`
-4. `uv run python scripts/score_ecotones.py` — score boundary contrast →
+4. `uv run python scripts/compute_forest_blocks.py` — connected-component `forest_block`s
+   from the adjacency graph → `data/forest_blocks.geojson`, plus a new `forest_block_id`
+   column onto `data/eraldis.geojson` (needs step 3 already done). **Real and working at
+   production scale** — see "Macroclustering" below.
+5. `uv run python scripts/compute_macroclusters.py` — partitions `forest_block`s into
+   `macrocluster`s → `data/macroclusters.geojson`, plus a new `macrocluster_id` column onto
+   `data/forest_blocks.geojson`/`data/eraldis.geojson` (needs step 4 already done). **Does
+   NOT complete at production scale as currently implemented** — see "Macroclustering"
+   below for the confirmed root cause; do not rely on this step's output being produced in
+   a real run today.
+6. `uv run python scripts/score_ecotones.py` — score boundary contrast →
    `data/ecotones.geojson`
-5. `uv run python scripts/score_habitat.py` — `StandHabitatScore` per species onto
-   `data/eraldis.geojson` (must run before step 6)
-6. `uv run python scripts/score_ecotone_habitat.py` — `EcotoneScore` per species onto
-   `data/ecotones.geojson` (depends on step 5's `stand_habitat_score_*` columns already
+7. `uv run python scripts/score_habitat.py` — `StandHabitatScore` per species onto
+   `data/eraldis.geojson` (must run before step 8)
+8. `uv run python scripts/score_ecotone_habitat.py` — `EcotoneScore` per species onto
+   `data/ecotones.geojson` (depends on step 7's `stand_habitat_score_*` columns already
    existing)
-7. `uv run python scripts/download_roads.py` — ETAK roads/barriers within the same home
+9. `uv run python scripts/download_roads.py` — ETAK roads/barriers within the same home
    radius → `data/roads.geojson`/`data/barriers.geojson` (only needs home coordinates, not
    steps 1-6)
-8. `uv run python scripts/score_access.py` — `AccessScore` onto `data/eraldis.geojson`
-   (needs steps 1 and 7 already done)
-9. `uv run python scripts/export_scout_candidates.py` — top-10-per-species `ScoutScore` v1
-   shortlist → `data/scout_candidates.geojson` (needs steps 5, 6, and 8 already done, plus
-   the FruitingScore steps below already run against a fresh `data/weather_eraldis.geojson`)
+10. `uv run python scripts/score_access.py` — `AccessScore` onto `data/eraldis.geojson`
+    (needs steps 1 and 9 already done)
+11. `uv run python scripts/export_scout_candidates.py` — top-10-per-species `ScoutScore` v1
+    shortlist → `data/scout_candidates.geojson` (needs steps 7, 8, and 10 already done, plus
+    the FruitingScore steps already run against a fresh `data/weather_eraldis.geojson`;
+    `main.py`'s real `STEPS` list runs `score_fruiting`/`score_ecotone_fruiting` between
+    steps 10 and 11, not shown as separate numbered steps here — same as before this task)
+12. `uv run python scripts/rollup_macroclusters.py` — joins today's
+    `data/scout_candidates.geojson` (step 11) against `data/macroclusters.geojson` (step 5)
+    for a per-macrocluster daily snapshot → `data/macrocluster_state.geojson` (needs steps 5
+    and 11 already done — **currently unreachable in a real run since step 5 doesn't
+    complete**; see "Macroclustering" below).
 
 At real scale (262,054 stands, 82,731 road segments, 1,878 barriers within the current
 33-70km/37km-wide annulus around home): steps 1 (`download_eraldis`), 2 (`enrich_eraldis`),
-and 7 (`download_roads`) now fetch WFS pages/batches concurrently (6 workers, via
+and 9 (`download_roads`) now fetch WFS pages/batches concurrently (6 workers, via
 `concurrent_fetch.py`) with per-page/per-batch progress output printed as they complete,
 instead of running silently. Measured wall-clock times from a live run against the real
 Metsaregister/ETAK endpoints on 2026-08-18, at this radius: step 1 12m58s (263 eraldis
 pages), step 2 8m5s (525 `eraldis_element` composition batches — previously 471.2s
 sequential for only 131 batches at the old, smaller 38km/18km radius, so per-batch
 throughput improved roughly 4x even though this run covers 4x the batches in about the same
-total wall time), step 7 2m32s for both the roads and barriers layers (previously ~4-5min,
+total wall time), step 9 2m32s for both the roads and barriers layers (previously ~4-5min,
 also at the old smaller radius, so this is faster in absolute terms despite the current
-radius yielding more roads/barriers than before). Steps 3-6 are fast (local computation),
-step 8 takes well under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a
-brute-force loop), step 9 is near-instant.
+radius yielding more roads/barriers than before). Step 3 is fast (local computation); step 4
+(`compute_forest_blocks`) took **2m8.7s** real time at real scale (262,054 eraldis →
+11,658 forest blocks, 1 flagged `oversized_block`) — see "Macroclustering" below for detail
+and for why step 5 (`compute_macroclusters`) could not be timed the same way (it does not
+finish). Steps 6-8 are fast (local computation), step 10 takes well under a minute
+(spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step 11 is
+near-instant. Step 12 is unverified at real scale (blocked by step 5).
 
 Note: the road/barrier counts above (82,731 / 1,878) are higher than an earlier plan
 document's "50,008 roads, 1,564 barriers" figure — that figure was measured at the old
@@ -287,13 +320,115 @@ score). Spot-checked output rows confirm `scout_score` correctly equals the prod
 three factors (e.g. one real row: `ecotone_score=1.030809 × access_modifier=1.0 ×
 fruiting_score=0.000113 ≈ scout_score=0.000117`).
 
+## Macroclustering (`forest_block` → `macrocluster` grouping)
+
+`src/shroom_fm/forest_block.py` and `src/shroom_fm/macrocluster.py` add a new grouping
+layer that sits between raw `eraldis` and everything scored above it: `forest_block`
+(a connected component of the existing `data/adjacency.geojson` `touching`/`near_gap`
+graph — i.e. "one physically contiguous forest massif") and `macrocluster` (a group of
+nearby `forest_block`s small enough to plausibly scout in one outing). **Critical design
+constraint: membership in a `forest_block` or `macrocluster` never depends on any score** —
+not `HabitatScore`, not `AccessScore`, not `FruitingScore`, not `ScoutScore`. It's a pure
+geography/adjacency grouping, computed once from `data/eraldis.geojson`/
+`data/adjacency.geojson` and stable across days, so a macrocluster's identity doesn't
+reshuffle after every rain event — a forager can meaningfully ask "how did this region look
+on Aug 18 vs Aug 23" the way they couldn't if the grouping itself were score-driven. Daily
+scores (today's `data/scout_candidates.geojson`) are joined onto this stable base separately
+by `scripts/rollup_macroclusters.py`, never folded back into the base grouping itself.
+
+Pipeline position (see "Running the full pipeline" above and `main.py`'s real `STEPS` list):
+`scripts/compute_forest_blocks.py` runs right after `compute_adjacency` (step 4) and
+`scripts/compute_macroclusters.py` right after that (step 5), both before any scoring step
+— `forest_block_id`/`macrocluster_id` land as new additive columns on `data/eraldis.geojson`
+the same way `access_score` etc. do. `scripts/rollup_macroclusters.py` runs last (step 12,
+after `export_scout_candidates`), joining today's `data/scout_candidates.geojson` against
+`data/macroclusters.geojson` to produce `data/macrocluster_state.geojson` — a same-day
+snapshot (`as_of` + per-species `today_ranked_count_*`/`today_top_score_*`/
+`today_top3_mean_score_*`/`today_top_target_id_*`/`today_weather_coverage_*` and a
+diagnostic `cross_macrocluster_ecotone_count`), kept as a separate file from
+`data/macroclusters.geojson` rather than mutating the stable base, matching how
+`data/weather_eraldis.geojson` is already a "latest snapshot only" file re-generated each
+run.
+
+**v0 engineering priors** (`src/shroom_fm/macrocluster.py`/`forest_block.py` constants) —
+named as geometric proxies for a future real road-network travel-time graph, not asserted
+travel-time facts, same discipline as this project's other v0 priors
+(`ACCESS_DISTANCE_CAP_M`, `MAX_GAP_M`, `FruitingScore`'s rain-response scales, etc.):
+`BLOCK_NEIGHBOR_PROXY_M = 8_000` (straight-line boundary-to-boundary distance cap for a
+`forest_block`-to-`forest_block` proximity-graph edge), `MACROCLUSTER_MAX_EXTENT_M =
+35_000` (hard cap on a macrocluster's convex-hull diameter, enforced by construction),
+`MACROCLUSTER_TARGET_EXTENT_M = 25_000` (soft/diagnostic-only threshold — also what
+`oversized_block` is measured against), `TARGET_BLOCK_COUNT = (5, 15)` (soft/diagnostic-only
+per-macrocluster block-count band).
+
+**Real pipeline run against the full 262,054-stand dataset, 2026-08-20 —
+`compute_forest_blocks.py` succeeded, `compute_macroclusters.py` did not complete:**
+
+`scripts/compute_forest_blocks.py` is real and working at production scale: **2m8.7s**
+real time, producing `11,658 forest block`s from `262,054 eraldis` with **1 flagged
+`oversized_block`** (`data/forest_blocks.geojson`), plus the new `forest_block_id` column
+on `data/eraldis.geojson`.
+
+`scripts/compute_macroclusters.py`, run immediately after against that real
+`data/forest_blocks.geojson`, **did not finish** — it was still running, pinned at 100% of
+one CPU core, after 42 minutes, then died with no completion output and no traceback
+(consistent with the OS OOM-killer: the process's own RSS had climbed to ~49-54% of this
+box's 7.7GB total RAM, `dmesg` showed active OOM-killer runs in this window, and system
+memory/swap fully recovered the instant the process disappeared — `real 42m5.6s` / `user
+41m54.6s` from the shell's own `time` measurement of the dead child). No
+`data/macroclusters.geojson` was ever written (the script's `to_file()` calls run only
+after the computation returns), so `data/eraldis.geojson`/`data/forest_blocks.geojson` were
+left exactly as `compute_forest_blocks.py` produced them — no partial/corrupt output.
+Consequently `scripts/rollup_macroclusters.py` could not be run either (it requires
+`data/macroclusters.geojson`), and the `cross_macrocluster_ecotone_count`/
+`oversized_macrocluster` real counts and the `data/macroclusters.geojson`/
+`data/macrocluster_state.geojson` spot-checks this task was supposed to perform could not
+be obtained.
+
+**Root cause, confirmed via a targeted diagnostic (not a guess):** reproducing
+`build_block_proximity_graph`'s exact edge-construction logic with vectorized
+numpy/`shapely.distance` instead of `geopandas`' `sjoin` + `DataFrame.iterrows()` (so it
+actually finishes — ~100s total) shows the real `data/forest_blocks.geojson` collapses into
+**exactly one super-component containing all 11,658 forest blocks**, with 2,209,103 edges
+in the block-proximity graph at `BLOCK_NEIGHBOR_PROXY_M = 8,000m`. This isn't a bug in the
+graph-construction code — Estonia is genuinely forested densely enough (262,054 stands
+already consolidate into "only" 11,658 `near_gap`/`touching`-adjacency forest blocks, ~22.5
+eraldis/block on average) that an 8km proximity threshold transitively connects the entire
+70km-radius annulus into one graph component, not into many small independent ones. That
+single super-component is exactly the worst case for `_complete_linkage_merge` (see
+`macrocluster.py`): each `while` iteration re-scans **all** O(k²) remaining candidate
+cluster pairs from scratch with no incremental caching, and both `connectivity_adjacent`
+and `complete_linkage_distance` cost `O(|cluster_a| × |cluster_b|)` rather than `O(1)` once
+clusters grow past singletons — for n≈11,658 starting from singletons this is a genuine,
+confirmed **O(n⁴)-class blowup**, not merely "slow": the observed 42 minutes of CPU time
+did not complete even a single full pass at this scale, and extrapolating the growth rate
+puts a real finish time at many hours to days in pure Python, not minutes. **This confirms,
+at real production scale, the exact O(n⁴) performance concern two reviewers flagged during
+Task 4's implementation** (see the plan's Task 4 note on replacing
+`sklearn.cluster.AgglomerativeClustering` with a manual connectivity-constrained
+complete-linkage merge) — it was not a theoretical worry, it makes `compute_macroclusters.py`
+**unusable on the real dataset as currently implemented**, and needs a real algorithmic fix
+(e.g. a genuinely bounded/incremental connectivity-constrained clustering algorithm, a
+vectorized distance computation, and/or an upstream step that avoids ever handing the merge
+step an 11,658-node single super-component in the first place) before this pipeline stage
+can be considered production-ready. `forest_block.py`'s own per-block Python loop (flagged
+separately as a non-vectorized-loop concern) was *not* the bottleneck here — it's exactly
+the 2m8.7s `compute_forest_blocks.py` measurement above, real but unremarkable at this
+scale; the O(n⁴) merge loop is the sole confirmed blocker.
+
 ## Planned architecture
 
 Data pipeline (this is the long-term target shape; see "Running the full pipeline" above
 for the actual current script sequence — `habitat`/`ecotone`/`access`/`FruitingScore`
 scores and the `ScoutScore` v1 export are all real today, only personal observation
 history remains unbuilt, and this diagram omits the ETAK roads/barriers WFS that `access`
-score now depends on alongside Metsaregister):
+score now depends on alongside Metsaregister). The `forest_block`/`macrocluster` grouping
+layer (see "Macroclustering" above) sits beside this score chain, not inside it — it's
+computed straight off `eraldis`/adjacency with no score input, and only rejoins the chain
+at the very end when `rollup_macroclusters.py` groups today's `ScoutScore` export by
+`macrocluster_id`. `compute_forest_blocks.py`'s half of that layer is real and verified at
+production scale; `compute_macroclusters.py`'s half is not yet usable there (see
+"Macroclustering" above for the confirmed real-scale blocker):
 
 ```
 Metsaregister WFS (GeoServer OWS)
@@ -305,22 +440,25 @@ Metsaregister WFS (GeoServer OWS)
               ▼
         GeoPandas (feature engineering)
               │
-      ┌───────┼─────────┐
-      │       │         │
-   habitat  ecotone   access
-    score    score     score
-      │       │         │
-      └───────┼─────────┘
-              ▼
+      ┌───────┼─────────┐        forest_block → macrocluster
+      │       │         │        (geography only, no scores —
+   habitat  ecotone   access      compute_forest_blocks.py real,
+    score    score     score      compute_macroclusters.py not yet
+      │       │         │         usable at real scale)
+      └───────┼─────────┘                      │
+              ▼                                │
         HabitatScore (static, recomputed rarely)
-              │
+              │                                │
               + FruitingScore(t)  — rainfall/temp history, recency of rain
               + observation history (your own logged finds)
+              ▼                                │
+        ScoutScore                             │
+              │                                │
+              ▼                                │
+        GeoJSON export ─────────────────────────┴──▶ rollup_macroclusters.py
+              │                                       → daily macrocluster state
               ▼
-        ScoutScore
-              │
-              ▼
-        GeoJSON export → QGIS / map viewer
+        QGIS / map viewer
 ```
 
 Longer-term target stack: **PostGIS** (stores `eraldis` geometry, computed scores, weather

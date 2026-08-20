@@ -232,3 +232,6 @@ data/barriers.geojson
 data/scout_candidates.geojson
 data/radar_cache/
 data/weather_eraldis.geojson
+data/forest_blocks.geojson
+data/macroclusters.geojson
+data/macrocluster_state.geojson

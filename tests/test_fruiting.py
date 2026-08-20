@@ -108,6 +108,15 @@ def test_season_prior_flat_extrapolates_after_last_knot():
     assert season_prior("chanterelle", "11-01") == pytest.approx(0.10)
 
 
+def test_season_prior_handles_feb_29_without_raising():
+    # Feb 29 is a real calendar date (occurs on real leap years) and falls before
+    # chanterelle's earliest knot (06-01), so it should flat-extrapolate the same
+    # as any other pre-June date rather than raising ValueError.
+    result = season_prior("chanterelle", "02-29")
+    assert result == pytest.approx(season_prior("chanterelle", "02-01"))
+    assert result == pytest.approx(season_prior("chanterelle", "01-01"))
+
+
 def test_fruiting_score_is_product_of_four_factors():
     score, components = fruiting_score(
         "chanterelle",

@@ -1,4 +1,6 @@
 import geopandas as gpd
+import pandas as pd
+import pytest
 from shapely.geometry import box
 
 from shroom_fm.macrocluster import BLOCK_NEIGHBOR_PROXY_M, build_block_proximity_graph
@@ -191,3 +193,208 @@ def test_compute_macroclusters_flags_a_single_block_that_is_already_oversized():
 def test_macrocluster_constants():
     assert MACROCLUSTER_MAX_EXTENT_M == 35_000
     assert TARGET_BLOCK_COUNT == (5, 15)
+
+
+from datetime import datetime, timezone
+
+from shroom_fm.habitat import TARGET_SPECIES
+from shroom_fm.macrocluster import ecotone_macrocluster_id, rollup_daily_state
+
+
+def _utc(*args):
+    return datetime(*args, tzinfo=timezone.utc)
+
+
+def _joined_columns(n: int, chanterelle_ecotone, chanterelle_eligible, chanterelle_fruiting):
+    """rollup_daily_state loops over every TARGET_SPECIES internally, so a real
+    joined_gdf always has ecotone_score_*/fruiting_modifier_* for all 5 species
+    (join_ecotone_fruiting guarantees this — it nulls a species' column rather than
+    omitting it when weather data is missing). Test fixtures must match that shape:
+    fill the 4 non-chanterelle species with a neutral, fully-covered value (ecotone
+    score 1.0, fruiting modifier 0.5) so weather_coverage_ratio doesn't KeyError,
+    while only chanterelle's values are what each test actually asserts against."""
+    columns = {
+        "scout_eligible": pd.array(chanterelle_eligible, dtype=object),
+    }
+    for species in TARGET_SPECIES:
+        if species == "chanterelle":
+            columns["ecotone_score_chanterelle"] = chanterelle_ecotone
+            columns["fruiting_modifier_chanterelle"] = chanterelle_fruiting
+        else:
+            columns[f"ecotone_score_{species}"] = [1.0] * n
+            columns[f"fruiting_modifier_{species}"] = [0.5] * n
+    return columns
+
+
+def test_ecotone_macrocluster_id_same_cluster():
+    mapping = {1: 5, 2: 5}
+    cluster_id, is_cross = ecotone_macrocluster_id(1, 2, mapping)
+    assert cluster_id == 5
+    assert is_cross is False
+
+
+def test_ecotone_macrocluster_id_cross_cluster_assigns_by_id_a():
+    mapping = {1: 5, 2: 6}
+    cluster_id, is_cross = ecotone_macrocluster_id(1, 2, mapping)
+    assert cluster_id == 5
+    assert is_cross is True
+
+
+def test_rollup_daily_state_computes_ranked_stats_for_a_populated_cluster():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {
+            "species": ["chanterelle", "chanterelle", "chanterelle"],
+            "tier": ["ranked", "ranked", "ranked"],
+            "scout_score": [0.9, 0.7, 0.5],
+            "id_a": [1, 3, 5],
+            "id_b": [2, 4, 6],
+        },
+        geometry=[Point(0, 0)] * 3,
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4, 5, 6], "macrocluster_id": [10, 10, 10, 10, 10, 10]},
+        geometry=[Point(0, 0)] * 6,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1, 3, 5],
+            "id_b": [2, 4, 6],
+            **_joined_columns(3, [1.0, 1.0, 1.0], [True, True, True], [0.9, 0.7, None]),
+        },
+        geometry=[Point(0, 0)] * 3,
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_ranked_count_chanterelle"] == 3
+    assert row["today_top_score_chanterelle"] == pytest.approx(0.9)
+    assert row["today_top3_mean_score_chanterelle"] == pytest.approx((0.9 + 0.7 + 0.5) / 3)
+    assert row["today_top_target_id_chanterelle"] is not None
+    assert row["today_weather_coverage_chanterelle"] == pytest.approx(2 / 3)
+    assert row["as_of"] == _utc(2026, 8, 20)
+
+
+def test_rollup_daily_state_top3_mean_with_fewer_than_three_candidates():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {
+            "species": ["chanterelle"],
+            "tier": ["ranked"],
+            "scout_score": [0.6],
+            "id_a": [1],
+            "id_b": [2],
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [10, 10]},
+        geometry=[Point(0, 0)] * 2,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1],
+            "id_b": [2],
+            **_joined_columns(1, [1.0], [True], [0.6]),
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_top3_mean_score_chanterelle"] == pytest.approx(0.6)
+
+
+def test_rollup_daily_state_cluster_with_zero_candidates_gets_none_not_zero():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1], "macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [],
+            "id_b": [],
+            **_joined_columns(0, [], [], []),
+        },
+        geometry=[],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_ranked_count_chanterelle"] == 0
+    assert row["today_top_score_chanterelle"] is None
+    assert row["today_top3_mean_score_chanterelle"] is None
+    assert row["today_top_target_id_chanterelle"] is None
+
+
+def test_rollup_daily_state_counts_cross_macrocluster_ecotones():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [10, 20]},
+        geometry=[Point(0, 0)] * 2,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10, 20]}, geometry=[Point(0, 0)] * 2, crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1],
+            "id_b": [2],  # id_a is in cluster 10, id_b is in cluster 20 — cross-cluster
+            **_joined_columns(1, [1.0], [True], [0.5]),
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row_10 = result[result["macrocluster_id"] == 10].iloc[0]
+    row_20 = result[result["macrocluster_id"] == 20].iloc[0]
+    assert row_10["cross_macrocluster_ecotone_count"] == 1
+    assert row_20["cross_macrocluster_ecotone_count"] == 0

@@ -1,8 +1,12 @@
+from datetime import datetime
+
 import geopandas as gpd
 import networkx as nx
 
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS, WGS84_CRS
 from shroom_fm.forest_block import MACROCLUSTER_TARGET_EXTENT_M, geometry_extent_m
+from shroom_fm.habitat import TARGET_SPECIES
+from shroom_fm.scout import weather_coverage_ratio
 
 BLOCK_NEIGHBOR_PROXY_M = 8_000
 
@@ -187,3 +191,76 @@ def compute_macroclusters(
     result_blocks["macrocluster_id"] = result_blocks["forest_block_id"].map(block_id_to_cluster)
 
     return result_blocks, clusters_gdf
+
+
+def ecotone_macrocluster_id(
+    id_a: int, id_b: int, eraldis_to_macrocluster: dict[int, int]
+) -> tuple[int, bool]:
+    cluster_a = eraldis_to_macrocluster[id_a]
+    cluster_b = eraldis_to_macrocluster[id_b]
+    return cluster_a, cluster_a != cluster_b
+
+
+def rollup_daily_state(
+    scout_candidates_gdf: gpd.GeoDataFrame,
+    joined_gdf: gpd.GeoDataFrame,
+    eraldis_gdf: gpd.GeoDataFrame,
+    macroclusters_gdf: gpd.GeoDataFrame,
+    now: datetime,
+) -> gpd.GeoDataFrame:
+    eraldis_to_macrocluster = dict(zip(eraldis_gdf["id"], eraldis_gdf["macrocluster_id"]))
+
+    # Assign every candidate and every scored ecotone to a macrocluster, counting
+    # cross-cluster anomalies as we go (diagnostic, never a hard failure).
+    candidate_cluster_ids = []
+    for id_a, id_b in zip(scout_candidates_gdf["id_a"], scout_candidates_gdf["id_b"]):
+        cluster_id, _ = ecotone_macrocluster_id(id_a, id_b, eraldis_to_macrocluster)
+        candidate_cluster_ids.append(cluster_id)
+    candidates = scout_candidates_gdf.copy()
+    candidates["macrocluster_id"] = candidate_cluster_ids
+
+    joined_cluster_ids = []
+    cross_flags = []
+    for id_a, id_b in zip(joined_gdf["id_a"], joined_gdf["id_b"]):
+        cluster_id, is_cross = ecotone_macrocluster_id(id_a, id_b, eraldis_to_macrocluster)
+        joined_cluster_ids.append(cluster_id)
+        cross_flags.append(is_cross)
+    joined = joined_gdf.copy()
+    joined["macrocluster_id"] = joined_cluster_ids
+    joined["is_cross_macrocluster"] = cross_flags
+
+    records = []
+    for cluster_id in macroclusters_gdf["macrocluster_id"]:
+        record = {"macrocluster_id": cluster_id, "as_of": now}
+        cluster_candidates = candidates[candidates["macrocluster_id"] == cluster_id]
+        cluster_joined = joined[joined["macrocluster_id"] == cluster_id]
+        record["cross_macrocluster_ecotone_count"] = int(
+            cluster_joined["is_cross_macrocluster"].sum()
+        )
+
+        for species in TARGET_SPECIES:
+            ranked = cluster_candidates[
+                (cluster_candidates["species"] == species)
+                & (cluster_candidates["tier"] == "ranked")
+            ]
+            ranked_count = len(ranked)
+            record[f"today_ranked_count_{species}"] = ranked_count
+            if ranked_count == 0:
+                record[f"today_top_score_{species}"] = None
+                record[f"today_top3_mean_score_{species}"] = None
+                record[f"today_top_target_id_{species}"] = None
+            else:
+                sorted_ranked = ranked.sort_values("scout_score", ascending=False)
+                record[f"today_top_score_{species}"] = float(sorted_ranked.iloc[0]["scout_score"])
+                top3 = sorted_ranked["scout_score"].head(3)
+                record[f"today_top3_mean_score_{species}"] = float(top3.mean())
+                record[f"today_top_target_id_{species}"] = (
+                    f"{sorted_ranked.iloc[0]['id_a']}_{sorted_ranked.iloc[0]['id_b']}"
+                )
+            record[f"today_weather_coverage_{species}"] = weather_coverage_ratio(
+                cluster_joined, species
+            )
+
+        records.append(record)
+
+    return gpd.GeoDataFrame(records, geometry=macroclusters_gdf.geometry.values, crs=macroclusters_gdf.crs)

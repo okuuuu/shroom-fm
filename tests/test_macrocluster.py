@@ -195,6 +195,83 @@ def test_macrocluster_constants():
     assert TARGET_BLOCK_COUNT == (5, 15)
 
 
+def test_partition_component_connectivity_splits_at_depth_exhaustion():
+    # Regression test for a real gap found via review: the depth-exhaustion
+    # early return in _partition_component used to skip the post-hoc
+    # nx.connected_components check every other return path goes through,
+    # so a group that centroid-clustering could never shrink under the cap
+    # (and so recursed all the way to _MAX_REPARTITION_DEPTH) could be
+    # returned as one merged group even if it wasn't actually reachable via
+    # the graph.
+    #
+    # Three blocks share the SAME centroid (0, 0) -- so scipy's
+    # complete-linkage clustering, which operates purely on centroid
+    # distance, can never split them apart no matter how far the threshold
+    # shrinks across recursive calls (distance 0 is always <= any positive
+    # threshold). Their real geometries are far apart (100km+ separations),
+    # so the dissolved group's geometry_extent_m always exceeds
+    # MACROCLUSTER_MAX_EXTENT_M, forcing every level of recursion down to
+    # _MAX_REPARTITION_DEPTH. The graph has no edges among them at all, so
+    # they are NOT actually connected/reachable from one another -- the fix
+    # must split them into three singleton groups rather than merging them.
+    import networkx as nx
+    from shapely.geometry import Point
+
+    from shroom_fm.macrocluster import MACROCLUSTER_MAX_EXTENT_M, _partition_component
+
+    id_to_centroid = {0: Point(0, 0), 1: Point(0, 0), 2: Point(0, 0)}
+    id_to_geom = {
+        0: box(0, 0, 10, 10),
+        1: box(100_000, 0, 100_010, 10),
+        2: box(200_000, 0, 200_010, 10),
+    }
+    graph = nx.Graph()
+    graph.add_nodes_from([0, 1, 2])  # no edges -- fully disconnected
+
+    result = _partition_component(
+        block_ids=[0, 1, 2],
+        id_to_centroid=id_to_centroid,
+        id_to_geom=id_to_geom,
+        graph=graph,
+        max_extent_m=MACROCLUSTER_MAX_EXTENT_M,
+    )
+
+    assert sorted(result) == [[0], [1], [2]]
+
+
+def test_partition_component_depth_exhaustion_keeps_merged_group_if_actually_connected():
+    # Contrast case: same centroid-collision/oversized-geometry setup that
+    # forces recursion to _MAX_REPARTITION_DEPTH, but this time the three
+    # blocks ARE connected via the graph -- the depth-exhaustion path must
+    # still give up and return them as one group (existing "flag oversized
+    # and move on" behavior), not spuriously split a genuinely connected
+    # group just because it hit the recursion limit.
+    import networkx as nx
+    from shapely.geometry import Point
+
+    from shroom_fm.macrocluster import MACROCLUSTER_MAX_EXTENT_M, _partition_component
+
+    id_to_centroid = {0: Point(0, 0), 1: Point(0, 0), 2: Point(0, 0)}
+    id_to_geom = {
+        0: box(0, 0, 10, 10),
+        1: box(100_000, 0, 100_010, 10),
+        2: box(200_000, 0, 200_010, 10),
+    }
+    graph = nx.Graph()
+    graph.add_edge(0, 1)
+    graph.add_edge(1, 2)
+
+    result = _partition_component(
+        block_ids=[0, 1, 2],
+        id_to_centroid=id_to_centroid,
+        id_to_geom=id_to_geom,
+        graph=graph,
+        max_extent_m=MACROCLUSTER_MAX_EXTENT_M,
+    )
+
+    assert result == [[0, 1, 2]]
+
+
 from datetime import datetime, timezone
 
 from shroom_fm.habitat import TARGET_SPECIES

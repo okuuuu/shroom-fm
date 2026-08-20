@@ -88,14 +88,28 @@ def _partition_component(
     if len(block_ids) == 1:
         return [block_ids]
     if depth >= _MAX_REPARTITION_DEPTH:
-        return [block_ids]
+        # Give up trying to shrink extent further, but still apply the same
+        # post-hoc connectivity check every other return path goes through:
+        # a group that's still oversized after exhausting repartition depth
+        # might nonetheless be graph-disconnected, and skipping the check
+        # here would let two graph-unreachable blocks get merged into one
+        # macrocluster just because centroid distance never happened to
+        # split them. Splitting can only shrink geometry_extent_m (never
+        # re-exceed the already-checked cap), so no extent re-check is
+        # needed here either.
+        connected_groups = [sorted(c) for c in nx.connected_components(graph.subgraph(block_ids))]
+        if len(connected_groups) == 1:
+            return [block_ids]
+        return connected_groups
 
     threshold = max_extent_m * (_REPARTITION_SHRINK_FACTOR**depth)
     ordered_ids = sorted(block_ids)
 
     if len(ordered_ids) == 2:
-        # scipy's linkage() requires at least 3 observations; handle the
-        # 2-point case directly.
+        # Handled directly as a simple case, avoiding the overhead of
+        # building a distance matrix and calling scipy for just two points
+        # (scipy.cluster.hierarchy.linkage itself handles n=2 fine; this is
+        # purely an optimization, not a workaround for a scipy limitation).
         a, b = ordered_ids
         dist = id_to_centroid[a].distance(id_to_centroid[b])
         centroid_groups = [[a, b]] if dist <= threshold else [[a], [b]]

@@ -10,6 +10,7 @@ import time
 from scripts import (
     compute_adjacency,
     compute_forest_blocks,
+    compute_macroclusters,
     download_eraldis,
     download_roads,
     enrich_eraldis,
@@ -27,6 +28,7 @@ STEPS = [
     ("enrich_eraldis", enrich_eraldis.main),
     ("compute_adjacency", compute_adjacency.main),
     ("compute_forest_blocks", compute_forest_blocks.main),
+    ("compute_macroclusters", compute_macroclusters.main),
     ("score_ecotones", score_ecotones.main),
     ("score_habitat", score_habitat.main),
     ("score_ecotone_habitat", score_ecotone_habitat.main),

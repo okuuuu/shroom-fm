@@ -10,7 +10,7 @@ suitability for specific species (chanterelles, spruce milk caps / `kuuseriisika
 then layers recent weather on top to produce a current, ranked shortlist of places worth
 scouting — instead of manually clicking around the Metsaregister web map.
 
-**Status: MVP steps 1-8 done.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
+**Status: MVP steps 1-9 done, including `FruitingScore`.** `src/shroom_fm/` holds `wfs.py` (WFS capabilities client),
 `config.py` (home location loading), `eraldis.py` (server-side CQL annulus download via
 `fetch_eraldis_annulus`), `cql.py` (shared `estonian_grid_point`/`annulus_filter` helpers
 that build the `DWITHIN`/`BEYOND` CQL_FILTER string used by both the eraldis and roads
@@ -36,12 +36,20 @@ runnable — see "Running the full pipeline" below for the exact command sequenc
 dependency order. The road-access piece of the Access/Eligibility layer has landed as
 `AccessScore` (see `docs/superpowers/specs/2026-08-17-road-access-design.md`) — additive-only
 onto `data/eraldis.geojson`, never modifying `StandHabitatScore`/`EcotoneScore`. MVP step 8
-(export top N → GeoJSON) has landed as `ScoutScore` v0 + `scripts/export_scout_candidates.py`
-→ `data/scout_candidates.geojson`. Still deferred: `FruitingScore` (weather), personal
-observation history, and a landscape-mosaic diversity bonus — none exist yet, and `ScoutScore`
-v0 simply omits them from its formula rather than faking neutral placeholder values for them.
-This file documents the target architecture so implementation stays consistent; update it as
-more of the pipeline lands.
+(export top N → GeoJSON) has landed as `ScoutScore` v1 + `scripts/export_scout_candidates.py`
+→ `data/scout_candidates.geojson`. `FruitingScore` (see "FruitingScore (weather-driven
+scoring)" below) is now real: `src/shroom_fm/fruiting.py` combines the weather-refresh
+features into a per-species, per-date `SeasonPrior × MoistureTrigger × TemperatureModifier
+× PersistenceModifier` score, exported via `scripts/score_fruiting.py` (per-stand) and
+`scripts/score_ecotone_fruiting.py` (per-ecotone, averaging both adjacent stands'
+`fruiting_score_*`), and `ScoutScore` v1 now multiplies in a third `fruiting_modifier`
+factor (`scout_score = ecotone_score × access_modifier × fruiting_modifier`) alongside a
+`MISSING_FRUITING_DATA` exclusion reason and a run-level `MIN_SCOUT_WEATHER_COVERAGE`
+guard — see that section for details. Still deferred: personal observation history and a
+landscape-mosaic diversity bonus — neither exists yet, and `ScoutScore` v1 simply omits
+them from its formula rather than faking neutral placeholder values for them. This file
+documents the target architecture so implementation stays consistent; update it as more of
+the pipeline lands.
 
 ## Running the full pipeline
 
@@ -71,8 +79,9 @@ branches done; step 9 needs everything upstream:
    steps 1-6)
 8. `uv run python scripts/score_access.py` — `AccessScore` onto `data/eraldis.geojson`
    (needs steps 1 and 7 already done)
-9. `uv run python scripts/export_scout_candidates.py` — top-5-per-species `ScoutScore` v0
-   shortlist → `data/scout_candidates.geojson` (needs steps 5, 6, and 8 already done)
+9. `uv run python scripts/export_scout_candidates.py` — top-10-per-species `ScoutScore` v1
+   shortlist → `data/scout_candidates.geojson` (needs steps 5, 6, and 8 already done, plus
+   the FruitingScore steps below already run against a fresh `data/weather_eraldis.geojson`)
 
 At real scale (262,054 stands, 82,731 road segments, 1,878 barriers within the current
 33-70km/37km-wide annulus around home): steps 1 (`download_eraldis`), 2 (`enrich_eraldis`),
@@ -140,13 +149,18 @@ data, not visible from synthetic test fixtures):
 (5-minute HDF5/ODIM files, rolling 14-day cache in `data/radar_cache/`) and MET Norway's
 MEPS/MET-Nordic hourly analysis grid (rolling 3-day window, no local cache — refetched
 each run) to produce `data/weather_eraldis.geojson`: per-`eraldis` `rain_3d_mm`/
-`rain_7d_mm`/`rain_14d_mm`, `hours_since_rain`, `wet_hours_72h`, `temp_mean_3d`/
-`temp_night_mean_3d`, `rh_mean_3d`/`rh_night_mean_3d`, plus `as_of`/
-`weather_data_coverage`/`weather_data_quality` columns. Unlike the rest of the pipeline
-this is time-varying and meant to be re-run on demand (e.g. before a scouting trip), not
-as part of `main.py`'s 9-step sequence. `FruitingScore` (combining these features into a
-per-species/date score and wiring into `ScoutScore`) is not yet built — this step only
-produces the raw weather features.
+`rain_7d_mm`/`rain_14d_mm`, the non-overlapping `rain_0_3d_mm`/`rain_3_7d_mm`/
+`rain_7_14d_mm` bins derived from those rolling sums, `hours_since_any_rain` (renamed
+from `hours_since_rain`), `hours_since_significant_rain`/`hours_since_strong_rain` and
+`last_significant_event_mm`/`last_strong_event_mm` (event-based, ≥5mm/≥10mm cumulative
+rain events with a 6-hour dry-gap boundary), `max_24h_rain_14d` (rolling 24-hour-max, not
+the flat 14-day total), `wet_hours_72h`, `temp_mean_3d`/`temp_night_mean_3d`,
+`rh_mean_3d`/`rh_night_mean_3d`, plus `as_of`/`weather_data_coverage`/
+`weather_data_quality` columns. Unlike the rest of the pipeline this is time-varying and
+meant to be re-run on demand (e.g. before a scouting trip), not as part of `main.py`'s
+9-step sequence. `FruitingScore` (combining these features into a per-species/date score
+and wiring into `ScoutScore`) is now real — see "FruitingScore (weather-driven scoring)"
+below.
 
 **Real first-ever (cold-start) run, verified live against production KAIA/MET Norway
 servers on 2026-08-18:** a warm/mostly-populated-cache invocation of
@@ -195,13 +209,91 @@ completeness — a possible future follow-up would be a separate recency-specifi
 check (e.g. over just the trailing 3-day window) rather than relying solely on the
 14-day-aggregate `MIN_RADAR_COVERAGE` threshold.
 
+**Resolved by a later, fully-warm run (2026-08-19/20, verified live during FruitingScore's
+Task 7):** a routine (non-cold-start) `refresh_weather.py` run reached
+`weather_data_quality: {'complete': 262054}` with `weather_data_coverage` slightly over 1.0
+(1.0074 — the same harmless KAIA-publish-cadence-faster-than-nominal artifact noted
+elsewhere) — genuinely full coverage, not the earlier run's 84.5%. `rain_3d_mm`/
+`rain_7d_mm` (and the newer `rain_0_3d_mm`/`rain_3_7d_mm`) were still ~0 for effectively
+all 262,054 stands (max `rain_14d_mm`/`max_24h_rain_14d` across the entire annulus was
+0.0086mm), and `hours_since_significant_rain`/`hours_since_strong_rain` were `NaN` (never
+triggered) for every stand. With full radar coverage this time, the earlier ambiguity is
+resolved: this is a real, extended dry spell in the covered region, not a cold-start
+recency-sampling artifact. `fruiting_score_*` for every species came back correspondingly
+tiny (max ~0.00016, mean ~1e-7) even though `fruiting_season_prior_*` was at its 1.0 peak
+and `fruiting_temperature_modifier` was a perfect 1.0 — `MoistureTrigger`'s near-zero value
+correctly suppressed the otherwise-ideal season/temperature conditions, which is the
+intended behavior of the multiplicative formula, not a bug.
+
+## FruitingScore (weather-driven scoring)
+
+`src/shroom_fm/fruiting.py` combines the weather-refresh features above into a per-species,
+per-date score: `FruitingScore = SeasonPrior × MoistureTrigger × TemperatureModifier ×
+PersistenceModifier`. `MoistureTrigger` is a species-weighted sum of a smooth exponential
+saturation response (`1 - exp(-mm/scale_mm)`, not a naive linear cap) over the three
+non-overlapping rain bins. `TemperatureModifier` multiplies an independent base
+temperature curve (floor 0.4 outside [2,26]°C, plateau at 1.0 across [8,18]°C) by a
+separate soft frost-guard factor derived from night temperature. `PersistenceModifier`
+floors at 0.6 plus a weighted blend of night humidity, `wet_hours_72h` saturation, and
+exponential recency-of-significant-rain decay (72h half-life) — a missing/never-happened
+`hours_since_significant_rain` is treated as "no qualifying event" (contributes 0 to that
+sub-score), not as missing data for the whole modifier. `SeasonPrior` is a per-species
+piecewise-linear curve over hand-picked Estonian anchor dates (RMK/Finnish-food-agency/
+personal-diary sourced), flat-extrapolated (never decaying to zero) outside its knot range.
+**All numeric constants in this module — rain-response scales, moisture weights,
+temperature/frost breakpoints, persistence weights, the `SEASON_PRIORS` knot tables — are
+v0 engineering priors, not measured mycological constants**, pending calibration against
+real logged observations (same discipline as `habitat.py`'s `HOST_PROFILES`/
+`SITE_TYPE_PROFILES`). `FruitingScore` is `None` (never a fabricated neutral value) if
+`MoistureTrigger`, `TemperatureModifier`, or `PersistenceModifier` is `None`; `SeasonPrior`
+is a pure calendar function and never returns `None`.
+
+Two pipeline scripts apply this: `scripts/score_fruiting.py` adds `fruiting_score_{species}`
+(plus `fruiting_moisture_score_{species}`/`fruiting_season_prior_{species}` and the two
+species-shared `fruiting_temperature_modifier`/`fruiting_persistence_modifier` columns)
+onto `data/weather_eraldis.geojson`; `scripts/score_ecotone_fruiting.py` then averages each
+ecotone's two adjacent stands' `fruiting_score_{species}` into `fruiting_modifier_{species}`
+onto `data/ecotones.geojson` — `None` (never a one-sided fabricated average) if either
+stand's score is missing or the stand id isn't present at all. `ScoutScore` v1
+(`src/shroom_fm/scout.py`) multiplies in this third factor: `scout_score = ecotone_score ×
+access_modifier × fruiting_modifier`. A candidate that's access-eligible but lacks usable
+fruiting data lands in the existing `remote_high_value` tier (no new third tier) tagged
+`exclusion_reason = "MISSING_FRUITING_DATA"`; if a candidate fails both access-eligibility
+and fruiting-data-availability at once, the existing `REMOTE_BY_V1_ACCESS_PROXY` reason
+takes precedence. `scripts/export_scout_candidates.py` also gates each species on a
+run-level `MIN_SCOUT_WEATHER_COVERAGE = 0.90`: if too small a fraction of a species'
+ecologically-and-access-eligible candidates have real fruiting data, that species' ranking
+is refused (loud diagnostic printed, species skipped, other species still processed
+normally) rather than publishing a misleadingly small/unrepresentative Top-N; if literally
+every species is refused, the script exits non-zero without writing
+`data/scout_candidates.geojson` at all.
+
+**Real pipeline run, verified live against the full 2026-08-18 dataset (262,054 stands,
+493,499 ecotone pairs) on 2026-08-20**, immediately after a fresh, fully-warm
+`refresh_weather.py` run (see the resolved dry-spell note above):
+`scripts/score_fruiting.py` took **2m44s**, `scripts/score_ecotone_fruiting.py` took
+**4m55s** — the clear outlier of the three FruitingScore scripts, roughly proportional to
+its ~1.9× row count (493,499 ecotone pairs vs. 262,054 stands) rather than a
+disproportionate blowup, but both `score_stands`/`join_ecotone_fruiting` use row-wise
+`pandas.DataFrame.iterrows()` rather than a vectorized approach — unlike `score_access.py`,
+which uses `geopandas.sjoin_nearest` — and this is the one part of the FruitingScore
+pipeline that could benefit from vectorization if it needs to get materially faster.
+`scripts/export_scout_candidates.py` took **2m41s** and produced a full ranking for all 5
+species (100 total candidates: 10 `ranked` + 10 `remote_high_value` per species) — the
+`MIN_SCOUT_WEATHER_COVERAGE` guard did not trigger for any species, consistent with the
+100% weather coverage that run measured; no `MISSING_FRUITING_DATA` rows appeared in this
+run's output for the same reason (every stand had a real, if extremely small, fruiting
+score). Spot-checked output rows confirm `scout_score` correctly equals the product of its
+three factors (e.g. one real row: `ecotone_score=1.030809 × access_modifier=1.0 ×
+fruiting_score=0.000113 ≈ scout_score=0.000117`).
+
 ## Planned architecture
 
 Data pipeline (this is the long-term target shape; see "Running the full pipeline" above
-for the actual current script sequence — `habitat`/`ecotone`/`access` scores and the
-`ScoutScore` v0 export are real today, `FruitingScore` and observation history are not yet
-built, and this diagram omits the ETAK roads/barriers WFS that `access` score now depends on
-alongside Metsaregister):
+for the actual current script sequence — `habitat`/`ecotone`/`access`/`FruitingScore`
+scores and the `ScoutScore` v1 export are all real today, only personal observation
+history remains unbuilt, and this diagram omits the ETAK roads/barriers WFS that `access`
+score now depends on alongside Metsaregister):
 
 ```
 Metsaregister WFS (GeoServer OWS)
@@ -251,8 +343,9 @@ fresh/old`) accumulates, revisit as a trained model (e.g. LightGBM) predicting
 8. Export top N results → GeoJSON
 9. View in QGIS (or a lighter-weight viewer if one turns out to fit better)
 
-Weather-driven `FruitingScore` and PostGIS storage are explicitly deferred until the static
-habitat scoring pipeline is validated.
+Weather-driven `FruitingScore` has landed (see "FruitingScore (weather-driven scoring)"
+above) now that the static habitat scoring pipeline is validated. PostGIS storage remains
+deferred.
 
 ## Data source: Metsaregister WFS
 

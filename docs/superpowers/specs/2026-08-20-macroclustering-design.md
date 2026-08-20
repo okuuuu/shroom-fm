@@ -132,11 +132,14 @@ of one forest to the edge of the other" signal for *graph connectivity* — it w
 later be replaced by real road-network travel time without changing this function's
 shape (an edge test against a cost threshold).
 
-Implementation: spatial-indexed nearest-neighbor query (e.g. `geopandas.sjoin_nearest`
-with a `max_distance`, consistent with how `access.py` already does its nearest-road
-lookup) rather than an O(n²) pairwise distance loop — at hundreds to low thousands of
-forest blocks this should be comfortably fast regardless, but match the codebase's
-existing spatial-index-first convention.
+Implementation: this needs *every* pair within the threshold, not just each block's
+single nearest neighbor, so `geopandas.sjoin_nearest` (which returns nearest-K, not
+all-within-distance) is the wrong tool here. `adjacency.py`'s `find_candidate_pairs`
+already solves exactly this shape of problem for `MAX_GAP_M` — buffer each geometry by
+the threshold, `gpd.sjoin(buffered, gdf, predicate="intersects")` for a spatial-indexed
+broad-phase candidate set, then compute the real (unbuffered) distance for each
+candidate pair and keep only those `<= BLOCK_NEIGHBOR_PROXY_M`. Reuse that exact
+pattern here rather than an O(n²) pairwise distance loop.
 
 ## Component 3: constrained partitioning into macroclusters
 

@@ -34,13 +34,33 @@ WEATHER_COLUMNS = [
 ]
 
 
+def _validate_columns(path: Path, expected_columns: list[str]) -> None:
+    """pyogrio.read_dataframe(path, columns=[...]) silently DROPS a requested column
+    name that doesn't exist in the file — no warning, no error. If one of these three
+    files' schema ever drifts (a column renamed/removed upstream), that would let the
+    script silently proceed with a smaller-than-expected frame, surfacing later as a
+    confusing KeyError deep inside join_ecotone_access/join_ecotone_fruiting/
+    rollup_daily_state, far from the actual cause. Fail immediately and legibly
+    instead."""
+    available = set(pyogrio.read_info(path)["fields"])
+    missing = set(expected_columns) - available
+    if missing:
+        raise ValueError(
+            f"{path} is missing expected column(s) {sorted(missing)} — "
+            f"schema may have drifted; available fields: {sorted(available)}"
+        )
+
+
 def main() -> None:
+    _validate_columns(ERALDIS_PATH, ERALDIS_COLUMNS)
     eraldis_gdf = pyogrio.read_dataframe(
         ERALDIS_PATH, columns=ERALDIS_COLUMNS, read_geometry=False
     )
+    _validate_columns(ECOTONES_PATH, ECOTONES_COLUMNS)
     ecotones_gdf = pyogrio.read_dataframe(
         ECOTONES_PATH, columns=ECOTONES_COLUMNS, read_geometry=False
     )
+    _validate_columns(WEATHER_PATH, WEATHER_COLUMNS)
     weather_gdf = pyogrio.read_dataframe(
         WEATHER_PATH, columns=WEATHER_COLUMNS, read_geometry=False
     )

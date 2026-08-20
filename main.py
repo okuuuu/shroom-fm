@@ -14,8 +14,10 @@ from scripts import (
     enrich_eraldis,
     export_scout_candidates,
     score_access,
+    score_ecotone_fruiting,
     score_ecotone_habitat,
     score_ecotones,
+    score_fruiting,
     score_habitat,
 )
 
@@ -28,6 +30,8 @@ STEPS = [
     ("score_ecotone_habitat", score_ecotone_habitat.main),
     ("download_roads", download_roads.main),
     ("score_access", score_access.main),
+    ("score_fruiting", score_fruiting.main),
+    ("score_ecotone_fruiting", score_ecotone_fruiting.main),
     ("export_scout_candidates", export_scout_candidates.main),
 ]
 

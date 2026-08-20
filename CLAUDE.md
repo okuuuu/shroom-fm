@@ -474,6 +474,29 @@ blocks lost or double-counted). `within_target_block_count` is `False` for all 2
 diagnostic-only (never enforced) and was calibrated for a much less densely-connected
 scenario than Estonia's real forest cover turned out to produce.
 
+**Memory scaling ceiling of `_partition_component` (documented 2026-08-20, found during
+the final whole-branch review, not yet a real failure):** `_partition_component`'s
+`scipy.cluster.hierarchy` step (`pdist`/`linkage`) is **O(n²) in memory**, where n is the
+size of the block-proximity graph's **largest connected super-component** — not the total
+`forest_block` count. At the real production scale measured above (the single
+11,658-forest_block super-component Estonia's real forest density collapses into at
+`BLOCK_NEIGHBOR_PROXY_M = 8,000m` — see Round 1's root-cause finding), `pdist`'s condensed
+distance matrix alone is a 67.9M-entry array (~543MB), plus scipy's own internal working
+copy during `linkage()`, for **~1.1GB measured peak RSS** — fine on this machine's 7.7GB
+RAM today, but this is exactly the same class of issue (a real-world cost driven by a
+property of the *actual data* — Estonia's forests collapsing into one giant connected
+component — rather than anything visible from reading the code) that caused two real OOM
+crashes earlier in this same branch's development (Round 1's `compute_macroclusters.py`
+crash and Round 3's `rollup_macroclusters.py` crash, both above). It should be written
+down now rather than rediscovered as a third OOM the same way. A future widening of the
+download radius, or any change to `BLOCK_NEIGHBOR_PROXY_M` that keeps the whole download
+area collapsed into one super-component (as it already does today), scales this O(n²)
+memory cost with the super-component's size, not with total `forest_block` count — worth
+**re-measuring before such a change**, not assuming today's ~1.1GB headroom on a 7.7GB
+machine still holds; back-of-envelope quadratic scaling puts real memory pressure
+somewhere in the 20,000-30,000-forest_block super-component range on a machine this size,
+not a precisely measured cliff.
+
 **Round 3 (2026-08-20, since fixed): `scripts/rollup_macroclusters.py` OOM-killed at real
 scale, for a reason unrelated to the macrocluster-partitioning algorithm.** With
 `data/macroclusters.geojson` now real, `rollup_macroclusters.py` was run against real data

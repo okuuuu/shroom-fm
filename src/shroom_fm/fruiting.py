@@ -248,7 +248,7 @@ def score_stands(weather_gdf: "gpd.GeoDataFrame", now) -> "gpd.GeoDataFrame":
 
     # Computed once per row (shared across all 5 species) via the zip()-over-
     # columns idiom used elsewhere in this codebase (habitat.score_stands,
-    # scout.scout_candidates_for_species) instead of iterrows(), which builds a
+    # scout.remote_high_value_for_species) instead of iterrows(), which builds a
     # full pandas Series per row.
     temp_modifiers = [
         temperature_modifier(temp_mean_3d, temp_night_mean_3d)

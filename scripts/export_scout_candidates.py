@@ -2,12 +2,14 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+import pyogrio
 
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS
 from shroom_fm.fruiting import join_ecotone_fruiting
 from shroom_fm.habitat import TARGET_SPECIES
 from shroom_fm.macrocluster import attach_macrocluster_id
 from shroom_fm.scout import (
+    ACCESS_COLUMNS,
     MAX_SUPPRESSED_EXAMPLES_PER_TARGET,
     MIN_SCOUT_SEPARATION_M,
     MIN_SCOUT_WEATHER_COVERAGE,
@@ -23,6 +25,53 @@ ERALDIS_PATH = Path("data/eraldis.geojson")
 ECOTONES_PATH = Path("data/ecotones.geojson")
 WEATHER_PATH = Path("data/weather_eraldis.geojson")
 OUTPUT_PATH = Path("data/scout_candidates.geojson")
+
+# Same OOM fix as scripts/rollup_macroclusters.py's ERALDIS_COLUMNS/WEATHER_COLUMNS (see
+# CLAUDE.md's "Macroclustering" section, Round 3): eraldis.geojson (787MB) and
+# weather_eraldis.geojson (1.1GB+) are large, full-featured GeoJSON files, but
+# attach_macrocluster_id/join_ecotone_access/join_ecotone_fruiting only ever read a
+# handful of named columns from each and never touch their geometry (each candidate
+# row's own geometry comes from ecotones_gdf, joined onto by id_a/id_b, not from
+# eraldis_gdf or weather_gdf). Loading either of those two in full via gpd.read_file()
+# pulls in every column (including nested `composition` data) and every stand polygon
+# for no reason. ecotones_gdf is NOT narrowed to columns=[...]-only the same way --
+# unlike rollup_macroclusters.py, this script's own final output is per-candidate rows
+# that need real ecotone geometry (for suppress_nearby_candidates' centroid distances
+# and for the exported "geometry" column itself), so its full geometry must stay; only
+# its non-geometry column set is still narrowed to what's actually used, for the same
+# reason.
+ERALDIS_COLUMNS = ["id", "macrocluster_id", *ACCESS_COLUMNS]
+ECOTONES_COLUMNS = [
+    "id_a",
+    "id_b",
+    "transition_length_m",
+    "dominant_species_a",
+    "dominant_species_b",
+    *[f"ecotone_score_{species}" for species in TARGET_SPECIES],
+]
+WEATHER_COLUMNS = [
+    "id",
+    *[f"fruiting_score_{species}" for species in TARGET_SPECIES],
+    "weather_data_quality",
+    "weather_data_coverage",
+    "as_of",
+]
+
+
+def _validate_columns(path: Path, expected_columns: list[str]) -> None:
+    """pyogrio.read_dataframe(path, columns=[...]) silently DROPS a requested column
+    name that doesn't exist in the file -- no warning, no error. Fail immediately and
+    legibly instead of surfacing a confusing KeyError deep inside a join/attach
+    function far from the actual cause (same discipline, and the same helper, as
+    rollup_macroclusters.py's identical guard)."""
+    available = set(pyogrio.read_info(path)["fields"])
+    missing = set(expected_columns) - available
+    if missing:
+        raise ValueError(
+            f"{path} is missing expected column(s) {sorted(missing)} -- "
+            f"schema may have drifted; available fields: {sorted(available)}"
+        )
+
 
 OUTPUT_COLUMNS = [
     "species",
@@ -132,9 +181,18 @@ def build_scout_candidate_rows(
 
 
 def main() -> None:
-    eraldis_gdf = gpd.read_file(ERALDIS_PATH)
-    ecotones_gdf = gpd.read_file(ECOTONES_PATH).to_crs(ESTONIAN_GRID_CRS)
-    weather_gdf = gpd.read_file(WEATHER_PATH)
+    _validate_columns(ERALDIS_PATH, ERALDIS_COLUMNS)
+    eraldis_gdf = pyogrio.read_dataframe(
+        ERALDIS_PATH, columns=ERALDIS_COLUMNS, read_geometry=False
+    )
+    _validate_columns(ECOTONES_PATH, ECOTONES_COLUMNS)
+    ecotones_gdf = pyogrio.read_dataframe(ECOTONES_PATH, columns=ECOTONES_COLUMNS).to_crs(
+        ESTONIAN_GRID_CRS
+    )
+    _validate_columns(WEATHER_PATH, WEATHER_COLUMNS)
+    weather_gdf = pyogrio.read_dataframe(
+        WEATHER_PATH, columns=WEATHER_COLUMNS, read_geometry=False
+    )
 
     joined = join_ecotone_access(ecotones_gdf, eraldis_gdf)
     joined = join_ecotone_fruiting(joined, weather_gdf)

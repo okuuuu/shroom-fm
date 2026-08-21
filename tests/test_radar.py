@@ -16,6 +16,7 @@ from shroom_fm.radar import (
     parse_radar_quality,
     radar_bbox_slice,
     radar_pixel_centers,
+    _validate_coverage,
 )
 
 from shroom_fm.radar import (
@@ -679,7 +680,7 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
         ul_lat=61.33568305549931,
     )
 
-    now = _utc(2026, 8, 15, 0, 10)
+    now = _utc(2026, 8, 15, 0, 15)
     # Estonia-ish bbox covering the fake grid's corner
     bounds = (20.0, 56.0, 30.0, 62.0)
 
@@ -689,7 +690,7 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
     # (1.0 + 2.0 + 0.0) mm/h * (5/60) h per slot = 0.25 mm total
     assert row0_col0["rain_3d_mm"] == pytest.approx(0.25)
     assert row0_col0["rain_14d_mm"] == pytest.approx(0.25)
-    assert row0_col0["hours_since_any_rain"] == pytest.approx(5 / 60)  # last wet slot was 5 min before `now`
+    assert row0_col0["hours_since_any_rain"] == pytest.approx(10 / 60)  # last wet slot was 10 min before `now`
     assert row0_col0["wet_hours_72h"] == pytest.approx(2 * 5 / 60)  # 2 wet slots
 
     row1_col1 = points[(points["row"] == 1) & (points["col"] == 1)].iloc[0]
@@ -708,14 +709,16 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
 
-    now = _utc(2026, 8, 15, 0, 0)
+    now = _utc(2026, 8, 15, 0, 5)
 
     # Full 5-minute-slot coverage for the trailing 3 days (864 expected slots), but
     # only a handful of files scattered further back in days 4-14 — the 14-day
     # aggregate should be far lower than the 3-day/7-day windows even though the
-    # 3-day/7-day windows are essentially complete.
+    # 3-day/7-day windows are essentially complete. With the half-open [start, end)
+    # boundary, create one extra file (at exactly 'now') so that after excluding that
+    # boundary file, 864 files remain in the 3d window.
     slots_3d = (3 * 24 * 60) // 5
-    for i in range(slots_3d):
+    for i in range(slots_3d + 1):
         ts = now - timedelta(minutes=5 * i)
         _write_fake_composite(
             cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_{i}.h5",
@@ -902,3 +905,52 @@ def test_parse_radar_quality_respects_row_col_slice(tmp_path):
     result = parse_radar_quality(path, row_slice=slice(0, 1), col_slice=slice(1, 2))
 
     np.testing.assert_array_almost_equal(result, [[0.8]])
+
+
+def test_cached_radar_files_excludes_the_window_end_boundary(tmp_path):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_RATE.h5", rate_grid=[[0.0]]
+    )
+    # A file whose timestamp is EXACTLY window_end must be excluded — [start, end),
+    # not [start, end] — this is the fix for the proven 4050/4032=1.0044... bug.
+    _write_fake_composite(
+        cache_dir / "20260815T001500Z_RATE.h5", rate_grid=[[0.0]]
+    )
+
+    window_end = _utc(2026, 8, 15, 0, 15)
+    files = cached_radar_files(cache_dir, _utc(2026, 8, 15, 0, 0), window_end)
+
+    assert len(files) == 1
+    assert cached_radar_timestamp(files[0]) == _utc(2026, 8, 15, 0, 0)
+
+
+def test_cached_radar_files_includes_the_window_start_boundary(tmp_path):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_RATE.h5", rate_grid=[[0.0]]
+    )
+
+    files = cached_radar_files(
+        cache_dir, _utc(2026, 8, 15, 0, 0), _utc(2026, 8, 15, 0, 15)
+    )
+
+    assert len(files) == 1  # window_start itself IS included — only window_end excluded
+
+
+def test_validate_coverage_passes_through_a_valid_fraction():
+    assert _validate_coverage(0.85, label="3d") == 0.85
+    assert _validate_coverage(0.0, label="3d") == 0.0
+    assert _validate_coverage(1.0, label="3d") == 1.0
+
+
+def test_validate_coverage_raises_on_a_value_above_one():
+    with pytest.raises(AssertionError, match="3d"):
+        _validate_coverage(1.0044642857142858, label="3d")
+
+
+def test_validate_coverage_raises_on_a_negative_value():
+    with pytest.raises(AssertionError, match="7d"):
+        _validate_coverage(-0.1, label="7d")

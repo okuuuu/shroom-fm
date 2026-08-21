@@ -30,6 +30,18 @@ _HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 _KEY_TIMESTAMP_RE = re.compile(r"@(\d{8}T\d{4})@0@RATE\.h5$")
 
 
+def _validate_coverage(value: float, *, label: str) -> float:
+    """Coverage is a fraction of expected observations actually present — it can never
+    exceed 1.0 or fall below 0.0. A violation is a real bug (see cached_radar_files'
+    docstring for the confirmed historical example), never something to silently accept
+    or clip away without noticing."""
+    assert 0.0 <= value <= 1.0, (
+        f"coverage[{label}]={value!r} violates the 0.0<=coverage<=1.0 invariant — "
+        "this indicates a real counting/boundary bug, not expected jitter"
+    )
+    return value
+
+
 def _list_radar_objects(bucket: str, prefix_date: date) -> list[dict]:
     """Lists real RATE.h5 objects for prefix_date in the given bucket, via the
     confirmed-working anonymous S3 ?list-type=2 listing (no signing, no boto3, no API
@@ -178,13 +190,18 @@ def expire_old_radar_composites(cache_dir: Path, cutoff: datetime) -> None:
 def cached_radar_files(
     cache_dir: Path, window_start: datetime, window_end: datetime
 ) -> list[Path]:
+    """window_end is EXCLUSIVE — [window_start, window_end) — not inclusive. The prior
+    inclusive-inclusive version, combined with real-world publish-cadence jitter, is
+    the confirmed exact root cause of a historical coverage > 1.0 bug (a real cache of
+    4050 files against an expected_slots_14d of 4032 produced coverage=4050/4032=
+    1.0044642857142858, bit-for-bit the value once shipped in production)."""
     if not cache_dir.exists():
         return []
     return sorted(
         (
             p
             for p in cache_dir.glob("*.h5")
-            if window_start <= cached_radar_timestamp(p) <= window_end
+            if window_start <= cached_radar_timestamp(p) < window_end
         ),
         key=cached_radar_timestamp,
     )

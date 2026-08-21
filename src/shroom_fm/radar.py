@@ -14,21 +14,38 @@ import requests
 
 OPERA_S3_BASE_URL = "https://s3.waw3-1.cloudferro.com/"
 OPERA_S3_BUCKET = "openradar-24h"
+# Genuinely historical, anonymously-accessible archive (distinct bucket from the rolling
+# ~24h OPERA_S3_BUCKET above) — confirmed live 2026-08-21, reaching back to at least
+# 2020-01-15, well beyond this project's 14-day window. See the "Correction
+# (2026-08-21, post-completion)" section of
+# docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md: an earlier
+# investigation of the anonymous ORD REST API alone (not this bucket) found no
+# historical access and concluded (at the time, correctly) that no backfill was
+# possible; this bucket was found afterward via a separate route listing and directly
+# confirmed anonymously accessible with the same list/download pattern as the recent
+# bucket.
+OPERA_ARCHIVE_S3_BUCKET = "openradar-archive"
 _S3_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 _HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 _KEY_TIMESTAMP_RE = re.compile(r"@(\d{8}T\d{4})@0@RATE\.h5$")
 
 
-def list_recent_radar_objects(prefix_date: date) -> list[dict]:
-    """Lists real RATE.h5 objects for prefix_date from the confirmed-working public
-    anonymous S3 endpoint (no signing, no boto3). Returns [] — not an error — for a
-    date that has legitimately rolled off the 24h rolling cache (confirmed real S3
-    behavior: a valid, empty KeyCount=0 response, not an HTTP error)."""
+def _list_radar_objects(bucket: str, prefix_date: date) -> list[dict]:
+    """Lists real RATE.h5 objects for prefix_date in the given bucket, via the
+    confirmed-working anonymous S3 ?list-type=2 listing (no signing, no boto3, no API
+    key). Shared by both OPERA_S3_BUCKET (rolling ~24h) and OPERA_ARCHIVE_S3_BUCKET
+    (genuine multi-year history) — both use the same key format and the same anonymous
+    access pattern, confirmed live for both 2026-08-21. Returns [] — not an error — for
+    a date the bucket has no data for (e.g. a rolled-off recent date): confirmed real S3
+    behavior is a valid, empty KeyCount=0 response, not an HTTP error.
+
+    Deliberately does not follow S3 pagination (NextContinuationToken): a single-day,
+    single-product-type prefix like this one returns at most a few hundred keys (15-min
+    cadence), far under the 1000-key max-keys page size used here, so truncation isn't a
+    real concern for this call shape even though the archive bucket does support
+    pagination for broader prefixes (confirmed live, not needed here)."""
     prefix = f"{prefix_date:%Y/%m/%d}/OPERA/COMP/"
-    url = (
-        f"{OPERA_S3_BASE_URL}{OPERA_S3_BUCKET}/"
-        f"?list-type=2&prefix={prefix}&max-keys=1000"
-    )
+    url = f"{OPERA_S3_BASE_URL}{bucket}/?list-type=2&prefix={prefix}&max-keys=1000"
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     root = ElementTree.fromstring(response.text)
@@ -46,6 +63,17 @@ def list_recent_radar_objects(prefix_date: date) -> list[dict]:
     return objects
 
 
+def list_recent_radar_objects(prefix_date: date) -> list[dict]:
+    """Lists RATE.h5 objects for prefix_date from the rolling ~24h OPERA_S3_BUCKET."""
+    return _list_radar_objects(OPERA_S3_BUCKET, prefix_date)
+
+
+def list_archived_radar_objects(prefix_date: date) -> list[dict]:
+    """Lists RATE.h5 objects for prefix_date from the genuinely historical
+    OPERA_ARCHIVE_S3_BUCKET — see that constant's docstring/comment for provenance."""
+    return _list_radar_objects(OPERA_ARCHIVE_S3_BUCKET, prefix_date)
+
+
 def _opera_cache_filename(timestamp: datetime) -> str:
     return f"{timestamp:%Y%m%dT%H%M%S}Z_RATE.h5"
 
@@ -55,16 +83,20 @@ def cached_radar_timestamp(path: Path) -> datetime:
     return datetime.strptime(stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
 
 
-def download_opera_object(key: str, cache_dir: Path) -> Path:
+def _download_radar_object(bucket: str, key: str, cache_dir: Path) -> Path:
     match = _KEY_TIMESTAMP_RE.search(key)
     timestamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M").replace(
         tzinfo=timezone.utc
     )
+    # Same cache filename convention regardless of source bucket — both buckets carry
+    # identical real data for any timestamp they both cover, so a file already fetched
+    # from one bucket correctly counts as a cache hit if later requested from the
+    # other, with no re-download or divergence risk.
     path = cache_dir / _opera_cache_filename(timestamp)
     if path.exists():
         return path
 
-    url = f"{OPERA_S3_BASE_URL}{OPERA_S3_BUCKET}/{key}"
+    url = f"{OPERA_S3_BASE_URL}{bucket}/{key}"
     response = requests.get(url, timeout=30)
     response.raise_for_status()
 
@@ -81,7 +113,17 @@ def download_opera_object(key: str, cache_dir: Path) -> Path:
     return path
 
 
-_S3_WINDOW_HOURS = 24
+def download_opera_object(key: str, cache_dir: Path) -> Path:
+    """Downloads one object from the rolling ~24h OPERA_S3_BUCKET."""
+    return _download_radar_object(OPERA_S3_BUCKET, key, cache_dir)
+
+
+def download_archived_radar_object(key: str, cache_dir: Path) -> Path:
+    """Downloads one object from the genuinely historical OPERA_ARCHIVE_S3_BUCKET."""
+    return _download_radar_object(OPERA_ARCHIVE_S3_BUCKET, key, cache_dir)
+
+
+_S3_RECENT_WINDOW_HOURS = 24
 
 
 def fetch_new_radar_composites(
@@ -89,32 +131,38 @@ def fetch_new_radar_composites(
 ) -> list[Path]:
     """Fetches new OPERA RATE composites into cache_dir, covering [since, now].
 
-    Only the last ~_S3_WINDOW_HOURS is servable at all — that's the confirmed-working,
-    rolling S3 window (Task 2's list_recent_radar_objects/download_opera_object). A
-    live investigation into the anonymous ORD REST API
-    (docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md) found it does
-    NOT expose data older than that same rolling window — every historical query it
-    tried returned 204 No Content, and every real file link it ever returned pointed
-    into this same S3 bucket. So a `since` older than the S3 window raises
-    NotImplementedError rather than silently returning a partial/wrong result.
+    Routes each requested calendar date to whichever bucket serves it: dates within the
+    last ~_S3_RECENT_WINDOW_HOURS use the rolling OPERA_S3_BUCKET (Task 2's
+    list_recent_radar_objects/download_opera_object); older dates use the genuinely
+    historical, anonymously-accessible OPERA_ARCHIVE_S3_BUCKET
+    (list_archived_radar_objects/download_archived_radar_object) — confirmed live to
+    reach back to at least 2020-01-15, far beyond this project's 14-day window (see the
+    "Correction" section of
+    docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md). Both buckets
+    carry identical real data for any date they both cover, so this routing boundary
+    isn't correctness-critical — an earlier version of this function raised
+    NotImplementedError for anything older than ~24h, based on an anonymous REST API
+    investigation that (correctly, at the time) found no historical access; a later
+    live test of a separate route/bucket found real anonymous historical access does
+    exist, so no NotImplementedError/API-key fallback is needed for this project's
+    14-day backfill need.
     """
     now = now or datetime.now(timezone.utc)
-    s3_window_start = now - timedelta(hours=_S3_WINDOW_HOURS)
-    if since < s3_window_start:
-        raise NotImplementedError(
-            "Historical OPERA backfill (>24h old) is not yet implemented — see "
-            "docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md for what "
-            "was tried against the ORD REST API. Only the last ~24h (S3) is currently "
-            "fetchable."
-        )
+    recent_window_start = now - timedelta(hours=_S3_RECENT_WINDOW_HOURS)
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     current_date = since.date()
     while current_date <= now.date():
-        for obj in list_recent_radar_objects(current_date):
+        if current_date >= recent_window_start.date():
+            objects = list_recent_radar_objects(current_date)
+            download = download_opera_object
+        else:
+            objects = list_archived_radar_objects(current_date)
+            download = download_archived_radar_object
+        for obj in objects:
             if since <= obj["timestamp"] <= now:
-                paths.append(download_opera_object(obj["key"], cache_dir))
+                paths.append(download(obj["key"], cache_dir))
         current_date += timedelta(days=1)
     return paths
 

@@ -24,6 +24,12 @@ from shroom_fm.radar import (
     list_recent_radar_objects,
 )
 
+from shroom_fm.radar import (
+    OPERA_ARCHIVE_S3_BUCKET,
+    download_archived_radar_object,
+    list_archived_radar_objects,
+)
+
 
 def _utc(*args):
     return datetime(*args, tzinfo=timezone.utc)
@@ -32,6 +38,7 @@ def _utc(*args):
 def test_opera_s3_constants_match_confirmed_real_endpoint():
     assert OPERA_S3_BASE_URL == "https://s3.waw3-1.cloudferro.com/"
     assert OPERA_S3_BUCKET == "openradar-24h"
+    assert OPERA_ARCHIVE_S3_BUCKET == "openradar-archive"
 
 
 def test_list_recent_radar_objects_parses_real_s3_listing_xml(monkeypatch):
@@ -599,21 +606,148 @@ def test_fetch_new_radar_composites_loops_over_each_date_in_range(
     assert len(result) == 2
 
 
-def test_fetch_new_radar_composites_raises_for_data_older_than_s3_window(tmp_path):
-    now = _utc(2026, 8, 21, 10, 0)
-    since = now - timedelta(days=3)  # far older than the ~24h S3 rolling window
+def test_list_archived_radar_objects_parses_real_s3_listing_xml_from_archive_bucket(
+    monkeypatch,
+):
+    # Same real S3 ListObjectsV2 XML shape as the recent bucket (confirmed live for
+    # openradar-archive too, 2026-08-21) — just a different bucket name in the URL and
+    # an older date.
+    fake_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Name>openradar-archive</Name>
+<Prefix>2026/06/22/OPERA/</Prefix>
+<IsTruncated>false</IsTruncated>
+<Contents>
+<Key>2026/06/22/OPERA/COMP/OPERA@20260622T0730@0@RATE.h5</Key>
+<LastModified>2026-06-22T07:40:03.186Z</LastModified>
+</Contents>
+<Contents>
+<Key>2026/06/22/OPERA/COMP/OPERA@20260622T0745@0@RATE.h5</Key>
+<LastModified>2026-06-22T07:55:03.637Z</LastModified>
+</Contents>
+</ListBucketResult>"""
+
+    class _FakeResponse:
+        text = fake_xml
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    captured_urls = []
+
+    def fake_get(url, timeout):
+        captured_urls.append(url)
+        return _FakeResponse()
+
+    monkeypatch.setattr("shroom_fm.radar.requests.get", fake_get)
+
+    objects = list_archived_radar_objects(_date(2026, 6, 22))
+
+    assert len(objects) == 2
+    assert objects[0]["timestamp"] == _utc(2026, 6, 22, 7, 30)
+    assert "openradar-archive" in captured_urls[0]
+    assert "openradar-24h" not in captured_urls[0]
+
+
+def test_download_archived_radar_object_hits_archive_bucket_url(tmp_path, monkeypatch):
+    class _FakeResponse:
+        content = b"\x89HDF\r\n\x1a\n" + b"archive-bytes"
+
+        def raise_for_status(self):
+            pass
+
+    captured_urls = []
+
+    def fake_get(url, timeout):
+        captured_urls.append(url)
+        return _FakeResponse()
+
+    monkeypatch.setattr("shroom_fm.radar.requests.get", fake_get)
 
     cache_dir = tmp_path / "radar_cache"
-    with pytest.raises(NotImplementedError, match="Historical OPERA backfill"):
-        fetch_new_radar_composites(cache_dir, since, now=now)
+    result = download_archived_radar_object(
+        "2026/06/22/OPERA/COMP/OPERA@20260622T0730@0@RATE.h5", cache_dir
+    )
+
+    assert result.exists()
+    assert cached_radar_timestamp(result) == _utc(2026, 6, 22, 7, 30)
+    assert captured_urls == [
+        "https://s3.waw3-1.cloudferro.com/openradar-archive/"
+        "2026/06/22/OPERA/COMP/OPERA@20260622T0730@0@RATE.h5"
+    ]
 
 
-def test_fetch_new_radar_composites_does_not_raise_at_exactly_the_24h_boundary(
+def test_fetch_new_radar_composites_routes_by_date_across_recent_and_archive_buckets(
     tmp_path, monkeypatch
 ):
+    # since is 2 days before now -> the earliest date is older than the ~24h recent
+    # window and must route through the historical archive bucket; the date
+    # containing `now` itself must still route through the recent bucket. This
+    # replaces the old NotImplementedError-for-anything-older-than-24h behavior, now
+    # that a real anonymous historical archive bucket has been confirmed to exist
+    # (see the "Correction" section of
+    # docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md).
     now = _utc(2026, 8, 21, 10, 0)
-    since = now - timedelta(hours=24)  # exactly at the boundary, must NOT raise
+    since = now - timedelta(days=2)  # 2026-08-19T10:00
 
+    recent_queried = []
+    archive_queried = []
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.list_recent_radar_objects",
+        lambda prefix_date: recent_queried.append(prefix_date) or [],
+    )
+    monkeypatch.setattr(
+        "shroom_fm.radar.list_archived_radar_objects",
+        lambda prefix_date: archive_queried.append(prefix_date) or [],
+    )
+
+    cache_dir = tmp_path / "radar_cache"
+    fetch_new_radar_composites(cache_dir, since, now=now)
+
+    # 2026-08-21 (today, contains `now`) must use the recent bucket.
+    assert _date(2026, 8, 21) in recent_queried
+    # 2026-08-19 (2 days old, older than the ~24h recent window) must use archive.
+    assert _date(2026, 8, 19) in archive_queried
+    # Neither bucket queried for a date that belongs to the other.
+    assert _date(2026, 8, 19) not in recent_queried
+    assert _date(2026, 8, 21) not in archive_queried
+
+
+def test_fetch_new_radar_composites_downloads_via_archive_bucket_for_old_dates(
+    tmp_path, monkeypatch
+):
+    # A 7-day-old range, confirmed live-reachable via the archive bucket in the
+    # findings doc's "Correction" section — must download real content, not raise.
+    now = _utc(2026, 8, 21, 10, 0)
+    since = now - timedelta(days=7)  # 2026-08-14T10:00
+
+    def fake_list_archived(prefix_date):
+        if prefix_date == since.date():
+            return [
+                {
+                    "key": "2026/08/14/OPERA/COMP/OPERA@20260814T1000@0@RATE.h5",
+                    "timestamp": since,
+                }
+            ]
+        return []
+
+    downloaded = []
+
+    def fake_download_archived(key, cache_dir_arg):
+        downloaded.append(key)
+        path = cache_dir_arg / "archived.h5"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x89HDF\r\n\x1a\n" + b"bytes")
+        return path
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.list_archived_radar_objects", fake_list_archived
+    )
+    monkeypatch.setattr(
+        "shroom_fm.radar.download_archived_radar_object", fake_download_archived
+    )
     monkeypatch.setattr(
         "shroom_fm.radar.list_recent_radar_objects", lambda prefix_date: []
     )
@@ -621,7 +755,9 @@ def test_fetch_new_radar_composites_does_not_raise_at_exactly_the_24h_boundary(
     cache_dir = tmp_path / "radar_cache"
     result = fetch_new_radar_composites(cache_dir, since, now=now)
 
-    assert result == []
+    assert downloaded == ["2026/08/14/OPERA/COMP/OPERA@20260814T1000@0@RATE.h5"]
+    assert len(result) == 1
+    assert result[0].exists()
 
 
 def _write_fake_composite(

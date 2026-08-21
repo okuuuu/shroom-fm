@@ -300,7 +300,8 @@ Expected: FAIL — `ImportError`.
 - [ ] **Step 3: Implement**
 
 Add to `src/shroom_fm/scout.py`, after the `MISSING_FRUITING_DATA_REASON`/
-`MIN_SCOUT_WEATHER_COVERAGE` constants (after line 63):
+`MIN_SCOUT_WEATHER_COVERAGE` constants (currently lines 58-59, right before
+`def scout_score`):
 
 ```python
 MIN_SCOUT_SEPARATION_M = 400.0

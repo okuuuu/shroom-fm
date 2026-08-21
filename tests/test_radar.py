@@ -499,7 +499,19 @@ def _write_fake_composite(
             quality_what.attrs["gain"] = 1.0
             quality_what.attrs["offset"] = 0.0
             quality_what.attrs["task"] = b"pl.imgw.quality.qi_total"
-        what = f.create_group("dataset1/what")
+        # Real confirmed OPERA structure (verified 2026-08-21 against live-downloaded
+        # openradar-archive files): gain/offset/nodata/undetect/quantity live under
+        # dataset1/data1/what, not dataset1/what — the latter holds only dataset-level
+        # metadata (startdate/enddate/product/prodname) with no decode attrs at all.
+        # Write both groups so tests exercise the real, full real-file shape.
+        ds_what = f.create_group("dataset1/what")
+        ds_what.attrs["startdate"] = b"20260807"
+        ds_what.attrs["starttime"] = b"104500"
+        ds_what.attrs["enddate"] = b"20260807"
+        ds_what.attrs["endtime"] = b"104500"
+        ds_what.attrs["product"] = b"PPI"
+        ds_what.attrs["prodname"] = b"OPERA NIMBUS instantaneous rain rate composite"
+        what = data_grp.create_group("what")
         what.attrs["gain"] = gain
         what.attrs["offset"] = offset
         what.attrs["nodata"] = nodata
@@ -1228,3 +1240,32 @@ def test_assign_radar_to_eraldis_handles_multiple_stands_independently():
 
     assert result.loc[0, "rain_3d_mm"] == pytest.approx(1.0)
     assert result.loc[1, "rain_3d_mm"] == pytest.approx(2.0)
+
+
+def test_assign_radar_to_eraldis_finds_pixel_for_a_small_stand_not_centered_on_a_point():
+    """Real eraldis stands are typically ~100-300m across, far smaller than the 2km
+    OPERA pixel grid, and their bounding box is essentially randomly positioned
+    relative to the fixed pixel-center grid — it will almost never itself contain a
+    pixel's own point coordinate. This is a direct regression test for the real
+    production bug found during Task 9's live backfill (2026-08-21): a live run against
+    262,054 real stands returned weather_data_coverage's mean of 0.007 and only 1,865
+    'complete' stands (~0.7%) — matching almost exactly the geometric probability that a
+    small random stand bbox happens to straddle a 2km-spaced grid point — because the
+    old cx[]-bbox-containment lookup (plus its zero-width centroid-slice fallback)
+    structurally only ever matched stands large enough, or luckily positioned enough, to
+    contain a pixel point outright."""
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    # A realistic small (200m) stand, offset 600-800m from pixel (0,0)'s own point
+    # (500000, 6500000) but still well within that pixel's true 2km x 2km cell
+    # (499000-501000, 6499000-6501000) — must resolve to pixel (0,0)'s rain=1.0, not None.
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[_box(500600, 6499300, 500800, 6499500)],
+        crs="EPSG:3301",
+    )
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
+
+    assert result.loc[0, "rain_3d_mm"] == pytest.approx(1.0)

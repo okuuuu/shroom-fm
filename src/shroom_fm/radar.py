@@ -284,7 +284,11 @@ def parse_radar_composite(
         # h5py slices at the dataset level — only the requested sub-region is read
         # from disk, not the full 1500x1500 array.
         raw = f["dataset1/data1/data"][row_slice, col_slice]
-        what = dict(f["dataset1/what"].attrs)
+        # Real confirmed OPERA structure (verified 2026-08-21 against live-downloaded
+        # openradar-archive files): gain/offset/nodata/undetect/quantity live under
+        # dataset1/data1/what, not dataset1/what (which holds only dataset-level
+        # metadata — startdate/enddate/product/prodname — no decode attrs at all).
+        what = dict(f["dataset1/data1/what"].attrs)
         where = dict(f["where"].attrs)
     gain = float(what["gain"])
     offset = float(what["offset"])
@@ -600,19 +604,62 @@ def accumulate_rainfall(
     return points, coverage
 
 
+# Just over half the diagonal of one real OPERA pixel (2000m x 2000m in its native
+# LAEA CRS; real cached files' own points, once averaged over their row/col index
+# range in EPSG:3301, show ~1956-2440m effective spacing depending on axis/rotation —
+# see assign_radar_to_eraldis's docstring). A stand centroid uniformly positioned
+# anywhere inside its true containing pixel's cell is, in the worst case (a cell
+# corner), at most half that cell's diagonal from the cell's own center point — for a
+# ~2000m cell that's ~1414m; 1500m keeps a safety margin over that bound without
+# reaching anywhere close to a neighboring pixel's cell (>=~1956m away), so this can
+# never reach into an adjacent pixel, unlike an unbounded nearest-join.
+_ASSIGN_FALLBACK_RADIUS_M = 1500.0
+
+
 def assign_radar_to_eraldis(
     eraldis_gdf: "gpd.GeoDataFrame",
     radar_points: "gpd.GeoDataFrame",
     columns: tuple[str, ...],
 ) -> "pd.DataFrame":
-    """For each eraldis stand, averages `columns` over every radar pixel whose point
-    the stand's bounding box actually contains — a direct coordinate-range lookup, NOT
-    gpd.sjoin/sjoin_nearest, so an unbounded-distance match (the original bug this
-    project migrated off KAIA to fix) is structurally impossible here. A pixel with a
-    NaN value for a column (zero valid observations in that pixel's window) is excluded
-    from the mean, never averaged in as if it were a real value. A stand with zero
-    valid pixels intersecting its own bounding box gets None for every column — never a
-    value borrowed from outside the stand's own footprint, at any distance."""
+    """For each eraldis stand, averages `columns` over every radar pixel whose point the
+    stand's own (unbuffered) bounding box actually contains — a direct coordinate-range
+    lookup, NOT gpd.sjoin/sjoin_nearest — used as-is for large stands (or any stand
+    whose bbox already spans one or more pixel points).
+
+    Real eraldis stands are typically ~100-300m across, far smaller than OPERA's 2km
+    pixel spacing, so for most stands that direct bbox query finds nothing at all: the
+    stand's own tiny bounding box essentially never itself contains one of the fixed,
+    regularly-spaced pixel-center points. This was a real production bug (not caught by
+    unit tests, whose fixtures all happened to center stand geometry exactly on a pixel
+    point) found via Task 9's real 262,054-stand backfill on 2026-08-21:
+    weather_data_coverage came back with mean 0.007 and only 1,865 'complete' stands
+    (~0.7%), matching almost exactly the geometric probability that a small,
+    effectively-randomly-positioned stand bbox happens to straddle a 2km-spaced grid
+    point. For that empty-bbox case only, this falls back to a single-nearest-point
+    lookup bounded to _ASSIGN_FALLBACK_RADIUS_M (~1500m, just over half of one real
+    pixel's diagonal — see that constant's docstring) of the stand's own centroid — a
+    bounded, fixed-radius fallback, not gpd.sjoin_nearest and not an unbounded match:
+    at that radius it can only ever reach the stand's own true containing pixel, never a
+    neighboring one, nowhere near the tens-of-km unbounded matches the original
+    KAIA-era sjoin_nearest bug produced (still covered by
+    test_assign_radar_to_eraldis_returns_none_when_stand_is_far_outside_the_grid, a
+    stand 500km away that must still resolve to None). An earlier version of this fix
+    tried to infer the grid's true pixel spacing from the reprojected point coordinates
+    themselves and buffer the bbox query outward by half of it; this looked
+    mathematically sound but was empirically wrong in two different ways in a row on
+    real data (nearest-neighbor min-diff over all points' x/y values is corrupted by
+    reprojection-induced cross-row jitter down to millimeters; the row/col-index-range
+    average that replaced it overshoots true spacing under grid rotation and, more
+    importantly, silently required a 'row'/'col' index column real callers always
+    provide but some existing tests' simpler fixtures do not) — replaced with this
+    fixed-radius nearest-point fallback specifically to depend on nothing but the
+    already-reprojected point geometry and stand geometry, not on grid metadata that
+    varies with the caller's fixture.
+
+    A pixel with a NaN value for a column (zero valid observations in that pixel's
+    window) is excluded from the mean, never averaged in as if it were a real value. A
+    stand with zero valid pixels found (by either lookup) gets None for every column —
+    never a value borrowed from outside the stand's own footprint, at any distance."""
     import pandas as pd
 
     if radar_points.empty:
@@ -626,12 +673,20 @@ def assign_radar_to_eraldis(
         minx, miny, maxx, maxy = geom.bounds
         candidates = radar_points.cx[minx:maxx, miny:maxy]
         if candidates.empty:
-            # Bounding-box query found nothing at all — try the pixel the stand's
-            # own centroid falls in as a last direct lookup, in case the stand's
-            # bounds are smaller than one pixel and cx's slice missed it.
-            candidates = radar_points.cx[
-                geom.centroid.x : geom.centroid.x, geom.centroid.y : geom.centroid.y
+            centroid = geom.centroid
+            prefilter = radar_points.cx[
+                centroid.x
+                - _ASSIGN_FALLBACK_RADIUS_M : centroid.x
+                + _ASSIGN_FALLBACK_RADIUS_M,
+                centroid.y
+                - _ASSIGN_FALLBACK_RADIUS_M : centroid.y
+                + _ASSIGN_FALLBACK_RADIUS_M,
             ]
+            if not prefilter.empty:
+                distances = prefilter.geometry.distance(centroid)
+                nearest_idx = distances.idxmin()
+                if distances.loc[nearest_idx] <= _ASSIGN_FALLBACK_RADIUS_M:
+                    candidates = prefilter.loc[[nearest_idx]]
         record = {}
         for col in columns:
             valid_values = candidates[col].dropna()

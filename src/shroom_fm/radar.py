@@ -607,12 +607,19 @@ def accumulate_rainfall(
 # Just over half the diagonal of one real OPERA pixel (2000m x 2000m in its native
 # LAEA CRS; real cached files' own points, once averaged over their row/col index
 # range in EPSG:3301, show ~1956-2440m effective spacing depending on axis/rotation —
-# see assign_radar_to_eraldis's docstring). A stand centroid uniformly positioned
-# anywhere inside its true containing pixel's cell is, in the worst case (a cell
-# corner), at most half that cell's diagonal from the cell's own center point — for a
-# ~2000m cell that's ~1414m; 1500m keeps a safety margin over that bound without
-# reaching anywhere close to a neighboring pixel's cell (>=~1956m away), so this can
-# never reach into an adjacent pixel, unlike an unbounded nearest-join.
+# see assign_radar_to_eraldis's docstring). For an axis-aligned square ~2000m cell, a
+# stand centroid at the worst-case position (a cell corner) is at most half that cell's
+# diagonal — ~1414m — from the cell's own center point, and 1500m keeps a margin over
+# that bound. This is an empirically sufficient margin, not a mathematically exhaustive
+# guarantee for an arbitrarily rotated/non-square grid cell: the observed effective
+# spacing varies by axis (~1956-2440m), so a real cell's true worst-case corner
+# distance could in principle exceed 1500m along a long/rotated axis, meaning this
+# fallback could rarely miss a genuinely-containing pixel. That failure mode is safe,
+# not silently wrong — a miss returns None (see below), it never fabricates or borrows
+# a value the way an unbounded nearest-join would. In practice, the real 262,054-stand
+# backfill (2026-08-21) achieved 100% completion at this radius, but that one real run
+# is evidence the edge case wasn't hit that time, not proof it can never occur for
+# every possible grid rotation.
 _ASSIGN_FALLBACK_RADIUS_M = 1500.0
 
 
@@ -637,13 +644,17 @@ def assign_radar_to_eraldis(
     effectively-randomly-positioned stand bbox happens to straddle a 2km-spaced grid
     point. For that empty-bbox case only, this falls back to a single-nearest-point
     lookup bounded to _ASSIGN_FALLBACK_RADIUS_M (~1500m, just over half of one real
-    pixel's diagonal — see that constant's docstring) of the stand's own centroid — a
-    bounded, fixed-radius fallback, not gpd.sjoin_nearest and not an unbounded match:
-    at that radius it can only ever reach the stand's own true containing pixel, never a
-    neighboring one, nowhere near the tens-of-km unbounded matches the original
-    KAIA-era sjoin_nearest bug produced (still covered by
+    pixel's diagonal for an axis-aligned square cell — see that constant's docstring
+    for the empirically-sufficient-but-not-mathematically-exhaustive caveat) of the
+    stand's own centroid — a bounded, fixed-radius fallback, not gpd.sjoin_nearest and
+    not an unbounded match: at that radius it is expected to reach only the stand's own
+    true containing pixel, never a neighboring one, nowhere near the tens-of-km
+    unbounded matches the original KAIA-era sjoin_nearest bug produced. A rare miss
+    under an unusually rotated/non-square cell fails safe — the stand simply gets None,
+    the same as the far-outside-grid case (still covered by
     test_assign_radar_to_eraldis_returns_none_when_stand_is_far_outside_the_grid, a
-    stand 500km away that must still resolve to None). An earlier version of this fix
+    stand 500km away that must still resolve to None) — never a fabricated or borrowed
+    value. An earlier version of this fix
     tried to infer the grid's true pixel spacing from the reprojected point coordinates
     themselves and buffer the bbox query outward by half of it; this looked
     mathematically sound but was empirically wrong in two different ways in a row on

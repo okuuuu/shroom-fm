@@ -187,7 +187,74 @@ No separate "archive" or "historical" collection exists in this API: `/collectio
 exactly one collection (`observations`), and its `data_queries` only exposes `position`,
 `area`, and `locations` query types — no distinct historical variant.
 
+## Correction (2026-08-21, post-completion): a separate archive route/bucket exists
+
+**Everything above this section tested only `https://api.meteogate.eu/eu-eumetnet-weather-radar`
+(no `-archive` suffix) anonymously. That conclusion — "no historical access on that route,
+anonymously" — remains correct as far as it goes, but is incomplete: it is not true that no
+historical access exists at all.** After this findings document was first written and Task 3
+had already completed an implementation built on the premise above, the user supplied a
+MeteoGate API key and a route listing that revealed a **separate route**,
+`https://api.meteogate.eu/eu-eumetnet-weather-radar-archive` (quota 2000 req/1h, 200 req/s,
+distinct from the 200 req/h route tested above), which was never tried in the original
+investigation. Live-tested immediately (2026-08-21, ~08:55 UTC), authenticated with the
+supplied key:
+
+- `GET .../eu-eumetnet-weather-radar-archive/collections` → real `200`, reporting a temporal
+  extent of `2012-09-03T23:05:00Z` to `2026-08-21T08:54:18Z` for the `observations`
+  collection — a genuine multi-year archive, not a relabeled 24h window.
+- `GET .../eu-eumetnet-weather-radar-archive/collections/observations/locations/0-20010-0-OPERA?parameter-name=RATE:comp&level=0.0&format=ODIM&datetime=<range>`
+  (same query shape as the working `/locations` request found above, just on the `-archive`
+  host) returned real `200` CoverageJSON with real file links for both a **7-day-old** range
+  (`2026-08-14T07:30:00Z/2026-08-14T08:30:00Z`) and a **60-day-old** range
+  (`2026-06-22T07:30:00Z/2026-06-22T08:30:00Z`) — both ranges that returned `204` on the
+  non-archive route above.
+- The returned links point to a **different S3 bucket**: `openradar-archive` (not
+  `openradar-24h`), same key format
+  (`YYYY/MM/DD/OPERA/COMP/OPERA@YYYYMMDDTHHMM@0@RATE.h5`). The CoverageJSON response's own
+  `length` field for these links showed an implausible `102` bytes — **this field is
+  unreliable/wrong**, not a sign the files are stubs: a direct `GET` on one of these exact
+  URLs (`.../openradar-archive/2026/08/14/OPERA/COMP/OPERA@20260814T0730@0@RATE.h5`) returned
+  a real `1,259,577`-byte file with a valid ODIM HDF5 signature (`\x89HDF\r\n\x1a\n`), matching
+  the real recent-file sizes established earlier in this document (~1.2-1.8MB), confirmed by
+  reading the downloaded bytes directly, not by trusting either the CoverageJSON metadata or a
+  request that "looked successful."
+- **The `openradar-archive` bucket is anonymously accessible** — the same pattern as
+  `openradar-24h`, requiring no API key at all for either listing or download:
+  - Anonymous `GET https://s3.waw3-1.cloudferro.com/openradar-archive/2026/08/14/OPERA/COMP/OPERA@20260814T0730@0@RATE.h5`
+    (no `X-API-Key` header) returned `200` with the same real 1,259,577-byte file.
+  - Anonymous `GET https://s3.waw3-1.cloudferro.com/openradar-archive/?list-type=2&prefix=2026/08/07/OPERA/COMP/OPERA@20260807T00&max-keys=100`
+    returned real RATE keys at 15-minute cadence (`T0000`, `T0015`, `T0030`, `T0045`) — the
+    same real cadence already established for the recent bucket, confirming no cadence change
+    for historical data.
+  - Anonymous listing was also confirmed to reach back to **2020-01-15**
+    (`?prefix=2020/01/15/OPERA/COMP/`, real `200`, real ~1.1-3.0MB file sizes, real
+    `NextContinuationToken` pagination present) — well beyond the 14-day window this project
+    needs, with no throttling headers observed on the S3 endpoint itself (unlike the REST API,
+    which does send `X-RateLimit-*` headers).
+- No further testing of the authenticated `-archive` REST route was done once the anonymous S3
+  bucket access was confirmed sufficient — the REST route may still be useful as a discovery
+  layer (e.g. if a future need arises to query by parameter combination rather than by date),
+  but is not required for basic historical backfill, since the bucket supports the exact same
+  anonymous `list-type=2` + direct `GET` pattern Task 2 already implemented for the recent
+  bucket.
+
+**Revised conclusion: a real, anonymously-accessible historical archive exists** at S3 bucket
+`openradar-archive` (base URL `https://s3.waw3-1.cloudferro.com/`, same key format as
+`openradar-24h`), reachable with the identical `list-type=2` listing + direct `GET` pattern
+already implemented in Task 2's `list_recent_radar_objects`/`download_opera_object`, requiring
+no API key and no rate-limited REST layer for the core backfill use case. Task 3's original
+implementation (an honest `NotImplementedError` for anything older than ~24h, built on the
+now-superseded finding above) needs to be redone as real historical-fetch code against this
+bucket.
+
 ## Recommendation for Task 3
+
+**⚠️ SUPERSEDED by the "Correction" section above — kept for the historical record, not
+current guidance.** This section's conclusion applied only to the anonymous
+`eu-eumetnet-weather-radar` route; the `-archive` route/bucket found afterward does provide
+real historical access. Skip to "Recommendation for Task 3 (revised)" below for what Task 3
+should actually do.
 
 **The anonymous ORD REST API does not provide access to data older than ~24 hours.** Every
 confirmed-working query for a range >~24h old returned `204 No Content`; every link ever
@@ -227,3 +294,44 @@ Concretely, for Task 3:
   scheduled job" rather than a true retroactive historical fetch, and this should be flagged
   back to whoever owns the overall migration plan as a real scope change, not silently
   absorbed into Task 3's implementation.
+
+## Recommendation for Task 3 (revised, post-correction)
+
+A historical path **was** found (see "Correction" above) — anonymous S3 access to the
+`openradar-archive` bucket, same pattern as the recent `openradar-24h` bucket. Concretely:
+
+- Implement historical fetch as a near-duplicate of Task 2's `list_recent_radar_objects`/
+  `download_opera_object`, parameterized by bucket name (`openradar-archive` instead of
+  `openradar-24h`) rather than by a REST API call — no API key, no CoverageJSON parsing, no
+  rate-limit handling beyond what Task 2 already does for the recent bucket, since the archive
+  bucket showed no `X-RateLimit-*` headers or other throttling signal on plain S3 listing/GET
+  across all tests in this session.
+  - Suggested shape: a shared `_list_radar_objects(bucket: str, prefix_date: date) ->
+    list[dict]` / `_download_radar_object(bucket: str, key: str, cache_dir: Path) -> Path`
+    pair that both `list_recent_radar_objects`/`download_opera_object` (Task 2, `openradar-24h`)
+    and the new historical functions (`openradar-archive`) delegate to — avoids duplicating the
+    XML-parsing/atomic-write logic Task 2 already wrote and tested, while keeping the public
+    function names/signatures Task 2 already established. This is a design choice for Task 3's
+    implementer to make, not dictated further here.
+  - Alternatively, if that refactor feels like scope creep for Task 3, a second, near-identical
+    pair of functions pointed at the other bucket is also acceptable — Task 3's implementer
+    should use judgment, consistent with this project's YAGNI discipline, and note the choice
+    in their report.
+- `fetch_new_radar_composites(cache_dir, since, *, now=None)` should route: for the portion of
+  `[since, now]` within roughly the last 24h, use the `openradar-24h` bucket (Task 2's existing
+  functions or their shared helper); for anything older, use the `openradar-archive` bucket.
+  The exact boundary doesn't need to be a precise 24h — since both buckets carry the same real
+  data for any date genuinely covered by both (confirmed: `openradar-24h`'s rolling window is a
+  strict subset of `openradar-archive`'s full history), it's safe and simpler to always prefer
+  `openradar-archive` for anything not within, say, the last few hours, or even to route
+  everything through the archive bucket exclusively — Task 3's implementer should decide based
+  on what keeps the code simplest, since there is no correctness difference between the two
+  paths for dates both buckets cover.
+- No `NotImplementedError` fallback is needed for the 14-day window this project actually
+  requires — real anonymous historical access covers it entirely, confirmed live back to at
+  least 2020-01-15 (30x more than the 14 days needed).
+- The `MeteoGateAPIKeyRequired`/`api_key`/`OPERA_API_KEY` scaffolding described in the original
+  (pre-correction) Task 3 brief text is **not needed** — no key is required for this migration's
+  actual 14-day backfill need. If a future need arises for the authenticated `-archive` REST
+  route specifically (e.g. richer server-side filtering), that's a separate, future concern, not
+  part of this migration.

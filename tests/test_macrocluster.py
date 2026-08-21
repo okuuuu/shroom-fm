@@ -1,7 +1,7 @@
 import geopandas as gpd
 import pandas as pd
 import pytest
-from shapely.geometry import box
+from shapely.geometry import Point, box
 
 from shroom_fm.macrocluster import BLOCK_NEIGHBOR_PROXY_M, build_block_proximity_graph
 
@@ -275,7 +275,7 @@ def test_partition_component_depth_exhaustion_keeps_merged_group_if_actually_con
 from datetime import datetime, timezone
 
 from shroom_fm.habitat import TARGET_SPECIES
-from shroom_fm.macrocluster import ecotone_macrocluster_id, rollup_daily_state
+from shroom_fm.macrocluster import attach_macrocluster_id, ecotone_macrocluster_id, rollup_daily_state
 
 
 def _utc(*args):
@@ -315,6 +315,70 @@ def test_ecotone_macrocluster_id_cross_cluster_assigns_by_id_a():
     cluster_id, is_cross = ecotone_macrocluster_id(1, 2, mapping)
     assert cluster_id == 5
     assert is_cross is True
+
+
+def test_attach_macrocluster_id_same_cluster():
+    joined_gdf = gpd.GeoDataFrame(
+        {"id_a": [1], "id_b": [2]}, geometry=[Point(0, 0)], crs="EPSG:3301"
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [5, 5]},
+        geometry=[Point(0, 0), Point(1, 1)],
+        crs="EPSG:3301",
+    )
+
+    result = attach_macrocluster_id(joined_gdf, eraldis_gdf)
+
+    assert result.loc[0, "macrocluster_id"] == 5
+    assert result.loc[0, "is_cross_macrocluster"] == False
+
+
+def test_attach_macrocluster_id_cross_cluster_assigns_by_id_a():
+    joined_gdf = gpd.GeoDataFrame(
+        {"id_a": [1], "id_b": [2]}, geometry=[Point(0, 0)], crs="EPSG:3301"
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [5, 6]},
+        geometry=[Point(0, 0), Point(1, 1)],
+        crs="EPSG:3301",
+    )
+
+    result = attach_macrocluster_id(joined_gdf, eraldis_gdf)
+
+    assert result.loc[0, "macrocluster_id"] == 5
+    assert result.loc[0, "is_cross_macrocluster"] == True
+
+
+def test_attach_macrocluster_id_multiple_rows_resolved_independently():
+    joined_gdf = gpd.GeoDataFrame(
+        {"id_a": [1, 3], "id_b": [2, 4]},
+        geometry=[Point(0, 0), Point(1, 1)],
+        crs="EPSG:3301",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4], "macrocluster_id": [5, 5, 9, 9]},
+        geometry=[Point(0, 0)] * 4,
+        crs="EPSG:3301",
+    )
+
+    result = attach_macrocluster_id(joined_gdf, eraldis_gdf)
+
+    assert list(result["macrocluster_id"]) == [5, 9]
+
+
+def test_attach_macrocluster_id_does_not_mutate_input():
+    joined_gdf = gpd.GeoDataFrame(
+        {"id_a": [1], "id_b": [2]}, geometry=[Point(0, 0)], crs="EPSG:3301"
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [5, 5]},
+        geometry=[Point(0, 0), Point(1, 1)],
+        crs="EPSG:3301",
+    )
+
+    attach_macrocluster_id(joined_gdf, eraldis_gdf)
+
+    assert "macrocluster_id" not in joined_gdf.columns
 
 
 def test_rollup_daily_state_computes_ranked_stats_for_a_populated_cluster():

@@ -215,6 +215,28 @@ def ecotone_macrocluster_id(
     return cluster_a, cluster_a != cluster_b
 
 
+def attach_macrocluster_id(
+    joined_gdf: gpd.GeoDataFrame, eraldis_gdf: gpd.GeoDataFrame
+) -> gpd.GeoDataFrame:
+    """Adds macrocluster_id (+ diagnostic-only is_cross_macrocluster) to every row of
+    joined_gdf (ecotones x access x fruiting, id_a/id_b columns), reusing
+    ecotone_macrocluster_id's existing cross-macrocluster convention (bucketed under
+    stand A's macrocluster) — the same resolution rollup_daily_state already performs,
+    just moved earlier in the pipeline so per-macrocluster ranking can happen at export
+    time instead of only at rollup time."""
+    eraldis_to_macrocluster = dict(zip(eraldis_gdf["id"], eraldis_gdf["macrocluster_id"]))
+    cluster_ids = []
+    cross_flags = []
+    for id_a, id_b in zip(joined_gdf["id_a"], joined_gdf["id_b"]):
+        cluster_id, is_cross = ecotone_macrocluster_id(id_a, id_b, eraldis_to_macrocluster)
+        cluster_ids.append(cluster_id)
+        cross_flags.append(is_cross)
+    result = joined_gdf.copy()
+    result["macrocluster_id"] = cluster_ids
+    result["is_cross_macrocluster"] = cross_flags
+    return result
+
+
 def rollup_daily_state(
     scout_candidates_gdf: gpd.GeoDataFrame,
     joined_gdf: gpd.GeoDataFrame,

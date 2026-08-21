@@ -56,17 +56,61 @@ exceed 1.0** (observed `1.0044...`), which is mathematically impossible for a fr
 and was previously documented as a "harmless" cadence artifact rather than fixed. This
 spec treats it as the real invariant violation it is.
 
+**Live pre-implementation verification (2026-08-21), against the real API and real
+downloaded files — not just documentation:** two real, consecutive OPERA `RATE`
+composites were fetched directly from the public `openradar-24h` S3 bucket
+(`s3://openradar-24h/2026/08/21/OPERA/COMP/OPERA@20260821T00{00,15}@0@RATE.h5`) and
+fully inspected. This resolved every open question the spec originally deferred to
+"verify once implementation starts": real grid is exactly `1900×2200` pixels at
+`2000m`/`2000m` (2km confirmed exactly, not estimated); real `projdef` is
+`+proj=laea +lat_0=55.0 +lon_0=10.0 ...` (Lambert Azimuthal Equal-Area, not Mercator as
+assumed — irrelevant, since the existing code already reads `projdef` dynamically per
+file and never hardcodes a projection family); real corners span roughly -40°E to
++58°E, 31.7°N to 67.6°N — genuinely pan-European, Estonia sits deep in the interior;
+real cadence for RATE confirmed as 15 minutes from the two files' own `starttime`
+attrs (`000000` → `001500`), not the `PT1M` the ORD catalog metadata's `duration`
+field misleadingly suggested (that field turned out to be unreliable — every
+parameter in the catalog, including RATE/DBZH, also reports `unit: "%"`, which is
+physically meaningless for a rain rate, confirming the catalog metadata layer is
+generic/templated in places and not to be trusted over real file content); real
+`gain`/`offset`/`nodata`(`-9999000.0`)/`undetect`(`-8888000.0`) confirm the exact same
+conceptual decode pattern as KAIA (different sentinel values, already read
+dynamically, not hardcoded anywhere in the existing code); a genuine per-pixel quality
+layer is present (`dataset1/data1/quality1/data`, decoded range exactly `[0.0, 1.0]`,
+`how.task='pl.imgw.quality.qi_total'`) — the real QIND-equivalent, identified by the
+ODIM `qualityN` subgroup convention rather than a `quantity` string (see Component 3).
+**Decisively: all four test points across Estonia — home/Tallinn, Tartu, Pärnu, and
+Valga — show real, valid, `quality=1.000` observations in this real file.** Valga is
+the exact location that motivated this whole investigation (visible on the live KAIA
+map, unreachable in KAIA's own small grid); OPERA covers it cleanly. Separately
+confirmed: the ORD REST API's anonymous rate limit is a real, numeric
+`200 requests/hour` (from the live `X-RateLimit-Limit` response header, not
+"undocumented" as first assumed), and the S3 bucket genuinely holds `OPERA/COMP/`
+composite files at recent dates — an initial check against a stale 2-day-old date
+wrongly suggested otherwise before this was caught and corrected. **Still open, not
+yet resolved live:** the exact request/response contract for fetching a *historical*
+(>24h old) date range via the REST API — every attempt against
+`/collections/observations/locations/{location_id}` returned `503` even for a minimal,
+correctly-shaped request, while sibling endpoints (`/collections`, `/area`) responded
+normally (`/area` returned a real `422` validation error for a missing param, then a
+real `204 No Content` for a corrected request — inconclusive on its own, likely a
+response-format negotiation issue rather than a hard failure, but not yet confirmed
+working end-to-end). This is carried into the plan as an explicit early task, not
+assumed.
+
 ## Architecture
 
 ```
                     OPERA Open Radar Data (MeteoGate)
                               │
         ┌─────────────────────┴─────────────────────┐
-   Historical/backfill                    Recent (≤24h)
-   ORD REST API + API key                 public anonymous S3
-   (RATE, 15-min slots,                   24h rolling cache
-    rolling 14-day window)                (no documented rate limit,
-        │                                  not asserted "unlimited")
+   Historical/backfill                    Recent (≤24h) — CONFIRMED WORKING
+   ORD REST API + API key                 public anonymous S3, no signing needed:
+   (request contract NOT YET             s3://openradar-24h/YYYY/MM/DD/OPERA/COMP/
+    confirmed — see Component 1)          OPERA@YYYYMMDDTHHMM@0@{RATE,ACRR,DBZH}.h5
+   200 req/hour anonymous                 (+ .tiff variants); real files fetched
+   (real, numeric, confirmed live)        and fully inspected 2026-08-21
+        │                                  │
         └─────────────────────┬─────────────────────┘
                     data/radar_cache/ (ODIM HDF5 — same standard as KAIA's)
                               │
@@ -102,10 +146,10 @@ spec treats it as the real invariant violation it is.
               (coverage is now a real per-stand spatial+temporal
                fraction, not just "how many files arrived today")
 
-QIND: read and carried through as optional quality metadata when a
-file has it (schema-supported, not guaranteed present in every real
-file — verify once implementation starts); pipeline behavior is
-identical whether or not it's present.
+Quality layer: confirmed present in real files as `dataset1/data1/quality1/data`
+([0,1] range, ODIM `qualityN`-subgroup convention, not a `quantity="QIND"` string)
+— read and carried through as optional enrichment; pipeline behavior is identical
+whether or not a given file has one.
 ```
 
 ## Components
@@ -115,26 +159,41 @@ identical whether or not it's present.
 Replaces `KAIA_QUERY_URL`/`KAIA_DOWNLOAD_URL_TEMPLATE`/`query_radar_documents`/
 `download_radar_composite`/`_cache_filename`/`cached_radar_timestamp`.
 
-- **Backfill/historical** (anything older than 24h, needed to populate/maintain the
-  rolling 14-day window): query MeteoGate's ORD REST API
+- **Recent (last 24h) — CONFIRMED WORKING against real live data.** List and fetch
+  from the public anonymous S3 bucket via plain HTTPS GET, no signing, no `boto3`:
+  `https://s3.waw3-1.cloudferro.com/openradar-24h/?list-type=2&prefix=YYYY/MM/DD/OPERA/COMP/`
+  for listing, then `GET https://s3.waw3-1.cloudferro.com/openradar-24h/<key>` per
+  object. Real confirmed key format:
+  `YYYY/MM/DD/OPERA/COMP/OPERA@YYYYMMDDTHHMM@0@{RATE,ACRR,DBZH}.h5` (a `.tiff`
+  cloud-optimized-GeoTIFF sibling also exists per key — not used by this project, ODIM
+  HDF5 is sufficient and matches the existing parsing code). **Important operational
+  note discovered live:** this is a genuine 24-hour *rolling* cache — querying a date
+  more than ~24-48h old returns a real, valid, empty (`KeyCount: 0`) response, not an
+  error — `_cache_filename`/backfill logic must not treat an empty listing for an old
+  date as a fetch failure, just as "this data has legitimately rolled off, use the REST
+  API instead."
+- **Backfill/historical** (anything older than the S3 24h window, needed to populate/
+  maintain the rolling 14-day window): query MeteoGate's ORD REST API
   (`https://api.meteogate.eu/eu-eumetnet-weather-radar`), `location_id=0-20010-0-OPERA`,
   `standard_name=RATE`, `method=comp`, `format=ODIM`, `datetime=<ISO8601 range>`. Uses a
-  registered API key (MeteoGate Developer Portal), not anonymous access — anonymous mode
-  is documented as having "low query limits," and a 14-day backfill at 15-minute cadence
-  is ~1,344 requests, not a casual anonymous-tier workload.
-- **Recent** (last 24h): list and fetch from the public anonymous S3 bucket
-  (`openradar-24h`, `https://s3.waw3-1.cloudferro.com/`, `--no-sign-request` equivalent
-  via plain HTTPS GET) — genuinely rate-limit-free for anonymous access is *not*
-  documented anywhere by EUMETNET, so this is described as "no documented per-query rate
-  limit," never "unlimited."
+  registered API key (MeteoGate Developer Portal) — anonymous access is capped at a
+  real, confirmed **200 requests/hour** (live `X-RateLimit-Limit` header), and a 14-day
+  backfill at 15-minute cadence is ~1,344 timestamps, not a casual anonymous-tier
+  workload regardless of how many timestamps one request can cover. **The exact request/
+  response contract for this endpoint is NOT yet confirmed** — every live attempt against
+  `/collections/observations/locations/{location_id}` returned `503` even for a minimal,
+  correctly-shaped request, while `/collections` and `/area` (a sibling data-query type)
+  both responded normally. This is carried into the plan as an explicit early task
+  (obtain a real API key, determine the working request shape and response cardinality/
+  pagination) — not assumed or guessed at in this spec.
 - `fetch_new_radar_composites(cache_dir, since)` keeps its existing signature (confirmed
   via reading `scripts/refresh_weather.py`, which calls it generically) — internally
   routes each requested time slice to S3 or the REST API by age, so the orchestrator
   script needs zero changes.
-- Real OPERA filename/timestamp convention needs confirming against a genuinely
-  downloaded file once implementation starts (cannot be verified without live access) —
-  `_cache_filename`/`cached_radar_timestamp` get adapted to whatever that convention
-  turns out to be.
+- Real OPERA filename/timestamp convention: **confirmed** — `OPERA@YYYYMMDDTHHMM@0@RATE.h5`
+  (the REST API's own delivered filenames need separate confirmation once its
+  request/response contract is resolved, but are expected to match, since both paths
+  serve the same underlying product).
 
 ### Component 2: `radar.py` — generic ODIM parsing (reused, re-verify against real data)
 
@@ -143,13 +202,28 @@ Replaces `KAIA_QUERY_URL`/`KAIA_DOWNLOAD_URL_TEMPLATE`/`query_radar_documents`/
 are kept largely as-is: they already read `projdef`/`xscale`/`yscale`/corner values
 dynamically from each file's own `where`/`what` attrs (not hardcoded to KAIA), and
 `radar_bbox_slice` already computes the AOI row/col crop from a cheap metadata-only read
-before any per-file raster decode — exactly the early-crop discipline OPERA's much
-larger (~3800×4400km) grid requires. These functions must be re-verified against a real
-downloaded OPERA file (different `projdef`, likely different corner/scale conventions,
-possibly a much larger `xsize`/`ysize`) once implementation can actually fetch one — the
-*design* doesn't change, but nothing here is assumed correct without a real-file check.
+before any per-file raster decode — exactly the early-crop discipline OPERA's grid
+requires. **Confirmed against two real downloaded files (2026-08-21):** real grid is
+exactly `xsize=1900, ysize=2200` at `xscale=yscale=2000.0` (2km, exact); real `projdef`
+is `+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0 +y_0=-2100000.0 +units=m
++ellps=WGS84` (Lambert Azimuthal Equal-Area — different projection family than KAIA's
+Mercator, but the existing code never hardcoded Mercator, reads `projdef` dynamically
+via `pyproj.CRS.from_proj4`, so this required zero code changes to work); real corners
+span roughly (-39.5°E, 67.0°N) to (57.8°E, 67.6°N) at the top and (-10.4°E, 31.7°N) to
+(29.4°E, 32.0°N) at the bottom — genuinely pan-European, Estonia sits deep in the
+interior. `Conventions: ODIM_H5/V2_4` — same standard as KAIA's files.
 
-### Component 3: `radar.py` — nodata/undetect/QIND-aware validity
+### Component 3: `radar.py` — nodata/undetect/quality-aware validity
+
+**Confirmed live pitfall — do not repeat KAIA's corner-metadata mistake.** The real
+file's top-level `how.nodes` attribute lists ~130 radar site codes (the OPERA network's
+full static roster, including both `eehar` and `eesur` for Estonia) — this is *not* a
+per-timestamp "which radars actually contributed valid data to this composite" signal;
+it reads as a fixed roster, not dynamically computed per file, same class of trap as
+KAIA's stale `LL/LR/UL/UR` corners. **The per-pixel `quality1` layer is the real,
+per-timestamp validity/confidence signal** — do not build any diagnostic on `how.nodes`
+expecting it to reflect a specific outage the way this project's original KAIA
+investigation used it.
 
 `parse_radar_composite`'s existing decode already correctly distinguishes `nodata`
 (→ `NaN`, invalid) from `undetect` (→ `0.0`, valid confirmed-dry) at the per-slot value
@@ -161,11 +235,25 @@ treating `undetect` as missing would make genuinely dry regions look under-cover
 treating `nodata` as a real zero would reintroduce the exact class of bug this whole
 migration exists to fix.
 
-QIND (ODIM's standard `[0,1]` quality-indicator dataset) is read and carried through
-as optional enrichment metadata when a file has it. The schema supports it; a specific
-product instance is not guaranteed to include it — pipeline behavior must be identical
-whether or not QIND is present. Never a hard requirement, never silently required for
-correctness.
+**Confirmed against a real file (2026-08-21):** a per-pixel quality dataset genuinely
+exists at `dataset1/data1/quality1/data`, same shape as the rain data, decoded value
+range exactly `[0.0, 1.0]` (`quality1/what` has `gain=1.0`/`offset=0.0`, no separate
+`quantity` attr — its identity as the quality layer comes from the ODIM `qualityN`
+subgroup-under-`data1` convention, not a `quantity="QIND"` string as the spec originally
+assumed), `quality1/how.task = 'pl.imgw.quality.qi_total'` (IMWM's real, named
+total-quality-index algorithm). At the 4 Estonian points spot-checked
+(home/Tallinn, Tartu, Pärnu, Valga), this quality value was `1.000` — real, present,
+high-confidence, including at Valga specifically, the exact point that motivated this
+whole investigation. Read and carried through as optional enrichment when present;
+pipeline behavior must be identical for a file that lacks a `qualityN` subgroup — never
+a hard requirement, never silently required for correctness.
+
+Separately confirmed real value-decode semantics from the same file:
+`dataset1/data1/what` has `gain=1.0`, `offset=0.0`, `nodata=-9999000.0`,
+`undetect=-8888000.0`, `quantity='RATE'` — same conceptual gain/offset/nodata/undetect
+pattern as KAIA's files (very different sentinel magnitudes, but the existing decode
+logic already reads these dynamically from each file's own attrs, never hardcoded, so
+this required zero code changes to keep working).
 
 ### Component 4: `radar.py` — `accumulate_rainfall` rewrite (raster-native)
 

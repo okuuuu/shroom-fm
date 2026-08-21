@@ -13,6 +13,7 @@ from shroom_fm.radar import (
     fetch_new_radar_composites,
     newest_cached_radar_timestamp,
     parse_radar_composite,
+    parse_radar_quality,
     radar_bbox_slice,
     radar_pixel_centers,
 )
@@ -444,14 +445,58 @@ def test_fetch_new_radar_composites_downloads_via_archive_bucket_for_old_dates(
 
 
 def _write_fake_composite(
-    path, *, rate_grid, gain=1.0, offset=0.0, nodata=65535.0, undetect=0.0
+    path,
+    *,
+    rate_grid,
+    gain=1.0,
+    offset=0.0,
+    nodata=-9999000.0,
+    undetect=-8888000.0,
+    quality_grid=None,
+    projdef=None,
+    xscale=None,
+    yscale=None,
+    ul_lon=None,
+    ul_lat=None,
 ):
-    """rate_grid is the real-world mm/h values wanted; encoded as raw = (rate-offset)/gain."""
-    raw = ((np.asarray(rate_grid, dtype=np.float64) - offset) / gain).astype(np.float32)
+    """rate_grid is the real-world mm/h values wanted; encoded as raw = (rate-offset)/gain.
+    Sentinel defaults match the real OPERA RATE product confirmed 2026-08-21 (previously
+    KAIA's 65535.0/0.0 — different magnitudes, same conceptual gain/offset/nodata/
+    undetect pattern the existing decode logic already reads dynamically). quality_grid,
+    if given, writes a real-shaped dataset1/data1/quality1/data subgroup (the confirmed
+    real ODIM qualityN-subgroup convention, gain=1.0/offset=0.0, no quantity attr) —
+    left as None by default so most fixtures produce a file with NO quality layer at
+    all, matching real OPERA files' actual variability and exercising the
+    "must behave identically whether or not a quality subgroup is present" requirement."""
+    # Default to real confirmed OPERA values, but allow override for specific tests
+    if projdef is None:
+        projdef = (
+            "+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0 "
+            "+y_0=-2100000.0 +units=m +ellps=WGS84"
+        )
+    if xscale is None:
+        xscale = 2000.0
+    if yscale is None:
+        yscale = 2000.0
+    if ul_lon is None:
+        ul_lon = -39.5357864125034
+    if ul_lat is None:
+        ul_lat = 67.0228327624372
+
+    raw = ((np.asarray(rate_grid, dtype=np.float64) - offset) / gain).astype(np.float64)
     with h5py.File(path, "w") as f:
-        f.attrs["Conventions"] = b"ODIM_H5/V2_2"
+        f.attrs["Conventions"] = b"ODIM_H5/V2_4"
         data_grp = f.create_group("dataset1/data1")
         data_grp.create_dataset("data", data=raw)
+        if quality_grid is not None:
+            quality_grp = data_grp.create_group("quality1")
+            quality_grp.create_dataset(
+                "data", data=np.asarray(quality_grid, dtype=np.float64)
+            )
+            quality_what = quality_grp.create_group("what")
+            quality_what.attrs["gain"] = 1.0
+            quality_what.attrs["offset"] = 0.0
+            quality_what.attrs["task"] = b"pl.imgw.quality.qi_total"
         what = f.create_group("dataset1/what")
         what.attrs["gain"] = gain
         what.attrs["offset"] = offset
@@ -459,25 +504,31 @@ def _write_fake_composite(
         what.attrs["undetect"] = undetect
         what.attrs["quantity"] = b"RATE"
         where = f.create_group("where")
-        where.attrs["projdef"] = b"+proj=merc +a=6371000 +lat_0=68 +lon_0=25"
+        # Real confirmed OPERA projdef/grid (2026-08-21) — Lambert Azimuthal Equal-Area,
+        # not KAIA's Mercator; the parsing code reads projdef dynamically so this swap
+        # requires no production code changes, only realistic test fixtures. Tests may
+        # override these to position grids in specific locations if needed.
+        if isinstance(projdef, str):
+            projdef = projdef.encode()
+        where.attrs["projdef"] = projdef
         where.attrs["xsize"] = raw.shape[1]
         where.attrs["ysize"] = raw.shape[0]
-        where.attrs["xscale"] = 359.07
-        where.attrs["yscale"] = 346.70
-        where.attrs["UL_lon"] = 20.354150207505985
-        where.attrs["UL_lat"] = 61.33568305549931
+        where.attrs["xscale"] = xscale
+        where.attrs["yscale"] = yscale
+        where.attrs["UL_lon"] = ul_lon
+        where.attrs["UL_lat"] = ul_lat
 
 
 def test_parse_radar_composite_decodes_valid_pixels_and_masks_sentinels(tmp_path):
     path = tmp_path / "sample.h5"
     _write_fake_composite(
         path,
-        rate_grid=[[0.0, 2.0], [65535.0, 0.5]],  # [1,0] will be forced to nodata below
+        rate_grid=[[0.0, 2.0], [-9999000.0, 0.5]],
     )
     # Overwrite one raw cell to the nodata sentinel directly (bypass gain/offset math)
     with h5py.File(path, "r+") as f:
         raw = f["dataset1/data1/data"][:]
-        raw[1, 0] = 65535.0
+        raw[1, 0] = -9999000.0
         f["dataset1/data1/data"][:] = raw
 
     rate_mm_h, georef = parse_radar_composite(path)
@@ -489,12 +540,23 @@ def test_parse_radar_composite_decodes_valid_pixels_and_masks_sentinels(tmp_path
     assert rate_mm_h[1, 1] == 0.5
     assert georef["xsize"] == 2
     assert georef["ysize"] == 2
-    assert georef["projdef"] == "+proj=merc +a=6371000 +lat_0=68 +lon_0=25"
+    assert georef["projdef"] == (
+        "+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0 "
+        "+y_0=-2100000.0 +units=m +ellps=WGS84"
+    )
 
 
 def test_radar_pixel_centers_builds_one_point_per_pixel_in_native_crs(tmp_path):
     path = tmp_path / "sample.h5"
-    _write_fake_composite(path, rate_grid=[[0.0, 0.0], [0.0, 0.0]])
+    _write_fake_composite(
+        path,
+        rate_grid=[[0.0, 0.0], [0.0, 0.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
     _, georef = parse_radar_composite(path)
 
     points = radar_pixel_centers(georef)
@@ -554,28 +616,32 @@ def test_radar_pixel_centers_applies_row_col_offset_for_sliced_grids():
 
 
 def test_radar_bbox_slice_covers_a_small_eraldis_bbox_within_the_full_grid():
-    # Real live-verified radar grid: 1500x1500, ~359m/347m pixels, Mercator, UL corner
-    # at 61.336N/20.354E. A small bbox near Tallinn (~59.4N/24.8E) should slice out a
-    # small sub-region, not the full 1500x1500 grid.
+    # Real live-verified OPERA radar grid: 1900x2200, 2000m pixels, LAEA, UL corner
+    # confirmed 2026-08-21. A small bbox near Tallinn (~59.4N/24.8E) should slice out a
+    # small sub-region, not the full 1900x2200 grid.
     georef = {
-        "projdef": "+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
-        "xsize": 1500,
-        "ysize": 1500,
-        "xscale": 359.07,
-        "yscale": 346.70,
-        "ul_lon": 20.354150207505985,
-        "ul_lat": 61.33568305549931,
+        "projdef": (
+            "+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0 "
+            "+y_0=-2100000.0 +units=m +ellps=WGS84"
+        ),
+        "xsize": 1900,
+        "ysize": 2200,
+        "xscale": 2000.0,
+        "yscale": 2000.0,
+        "ul_lon": -39.5357864125034,
+        "ul_lat": 67.0228327624372,
     }
     # Tallinn-area bbox, ~30km wide
     bbox = (24.6, 59.3, 25.0, 59.5)
 
     row_slice, col_slice = radar_bbox_slice(georef, bbox, buffer_pixels=5)
 
-    assert 0 <= row_slice.start < row_slice.stop <= 1500
-    assert 0 <= col_slice.start < col_slice.stop <= 1500
-    # Should be a small fraction of the full grid, not the whole thing
-    assert (row_slice.stop - row_slice.start) < 300
-    assert (col_slice.stop - col_slice.start) < 300
+    assert 0 <= row_slice.start < row_slice.stop <= 2200
+    assert 0 <= col_slice.start < col_slice.stop <= 1900
+    # 30km at 2km/pixel is ~15 pixels wide plus buffer — should be small, well under
+    # the coarser threshold appropriate for this grid's resolution
+    assert (row_slice.stop - row_slice.start) < 50
+    assert (col_slice.stop - col_slice.start) < 50
 
 
 def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
@@ -583,18 +649,34 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
     cache_dir.mkdir()
 
     # 3 files, 5 minutes apart, each with a 2x2 grid; pixel [0,0] rains every time,
-    # pixel [1,1] never rains.
+    # pixel [1,1] never rains. Use old KAIA grid coordinates to ensure pixels overlap
+    # with the test bbox (20-30°E, 56-62°N).
     _write_fake_composite(
         cache_dir / "20260815T000000Z_1.h5",
         rate_grid=[[1.0, 0.0], [0.0, 0.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
     )
     _write_fake_composite(
         cache_dir / "20260815T000500Z_2.h5",
         rate_grid=[[2.0, 0.0], [0.0, 0.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
     )
     _write_fake_composite(
         cache_dir / "20260815T001000Z_3.h5",
         rate_grid=[[0.0, 0.0], [0.0, 0.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
     )
 
     now = _utc(2026, 8, 15, 0, 10)
@@ -638,6 +720,11 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
         _write_fake_composite(
             cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_{i}.h5",
             rate_grid=[[0.0, 0.0], [0.0, 0.0]],
+            projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+            xscale=359.07,
+            yscale=346.70,
+            ul_lon=20.354150207505985,
+            ul_lat=61.33568305549931,
         )
 
     # A handful of sparse older files, days 4-14 (outside the 3d/7d windows).
@@ -646,6 +733,11 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
         _write_fake_composite(
             cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_old{days_ago}.h5",
             rate_grid=[[0.0, 0.0], [0.0, 0.0]],
+            projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+            xscale=359.07,
+            yscale=346.70,
+            ul_lon=20.354150207505985,
+            ul_lat=61.33568305549931,
         )
 
     bounds = (20.0, 56.0, 30.0, 62.0)
@@ -667,16 +759,29 @@ def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path)
     # Crosses SIGNIFICANT_EVENT_MM=5.0 at the 3rd slot (cumulative 6.0), continues
     # advancing through the 4th slot (cumulative 8.0), and reaches STRONG_EVENT_MM=10.0
     # at the 5th slot (cumulative 10.0) since it's still the same event.
-    _write_fake_composite(cache_dir / "20260815T000000Z_1.h5", rate_grid=[[24.0]])
-    _write_fake_composite(cache_dir / "20260815T000500Z_2.h5", rate_grid=[[24.0]])
-    _write_fake_composite(cache_dir / "20260815T001000Z_3.h5", rate_grid=[[24.0]])
-    _write_fake_composite(cache_dir / "20260815T001500Z_4.h5", rate_grid=[[24.0]])
-    # 5th slot: cumulative 8+2=10.0 -> crosses STRONG_EVENT_MM=10.0.
-    _write_fake_composite(cache_dir / "20260815T002000Z_5.h5", rate_grid=[[24.0]])
+    for i, ts in enumerate(["20260815T000000Z", "20260815T000500Z", "20260815T001000Z",
+                             "20260815T001500Z", "20260815T002000Z"]):
+        _write_fake_composite(
+            cache_dir / f"{ts}_{i}.h5",
+            rate_grid=[[24.0]],
+            projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+            xscale=359.07,
+            yscale=346.70,
+            ul_lon=20.354150207505985,
+            ul_lat=61.33568305549931,
+        )
 
     # Dry gap > 6h, then a NEW event that never reaches 5mm — must not affect the
     # already-recorded significant/strong stats from the first event.
-    _write_fake_composite(cache_dir / "20260815T080000Z_6.h5", rate_grid=[[12.0]])  # 1.0mm
+    _write_fake_composite(
+        cache_dir / "20260815T080000Z_6.h5",
+        rate_grid=[[12.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
 
     now = _utc(2026, 8, 15, 9, 0)  # 1h after the 6th file
 
@@ -697,7 +802,15 @@ def test_accumulate_rainfall_never_had_a_significant_event_is_nan(tmp_path):
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
     # Single slot, only 1.0mm — never reaches SIGNIFICANT_EVENT_MM=5.0.
-    _write_fake_composite(cache_dir / "20260815T000000Z_1.h5", rate_grid=[[12.0]])
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_1.h5",
+        rate_grid=[[12.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
 
     now = _utc(2026, 8, 15, 0, 5)
     points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
@@ -715,10 +828,34 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
     # Two slots close together (1.0mm each, same 24h window) = 2.0mm concentrated.
-    _write_fake_composite(cache_dir / "20260815T000000Z_1.h5", rate_grid=[[12.0]])
-    _write_fake_composite(cache_dir / "20260815T000500Z_2.h5", rate_grid=[[12.0]])
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_1.h5",
+        rate_grid=[[12.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
+    _write_fake_composite(
+        cache_dir / "20260815T000500Z_2.h5",
+        rate_grid=[[12.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
     # A 3rd slot 5 days later (well outside any 24h window containing the first two).
-    _write_fake_composite(cache_dir / "20260820T000000Z_3.h5", rate_grid=[[12.0]])
+    _write_fake_composite(
+        cache_dir / "20260820T000000Z_3.h5",
+        rate_grid=[[12.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
 
     now = _utc(2026, 8, 20, 0, 10)
     points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
@@ -729,3 +866,39 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     # the same window as the late one.
     assert row["rain_14d_mm"] == pytest.approx(3.0)
     assert row["max_24h_rain_14d"] == pytest.approx(2.0)
+
+
+def test_parse_radar_quality_returns_none_when_no_quality_subgroup_present(tmp_path):
+    path = tmp_path / "no_quality.h5"
+    _write_fake_composite(path, rate_grid=[[0.0, 1.0]])
+
+    result = parse_radar_quality(path)
+
+    assert result is None
+
+
+def test_parse_radar_quality_decodes_real_quality_subgroup_when_present(tmp_path):
+    path = tmp_path / "with_quality.h5"
+    _write_fake_composite(
+        path,
+        rate_grid=[[0.0, 1.0], [2.0, 3.0]],
+        quality_grid=[[1.0, 0.8], [0.0, 1.0]],
+    )
+
+    result = parse_radar_quality(path)
+
+    assert result is not None
+    np.testing.assert_array_almost_equal(result, [[1.0, 0.8], [0.0, 1.0]])
+
+
+def test_parse_radar_quality_respects_row_col_slice(tmp_path):
+    path = tmp_path / "with_quality.h5"
+    _write_fake_composite(
+        path,
+        rate_grid=[[0.0, 1.0], [2.0, 3.0]],
+        quality_grid=[[1.0, 0.8], [0.0, 1.0]],
+    )
+
+    result = parse_radar_quality(path, row_slice=slice(0, 1), col_slice=slice(1, 2))
+
+    np.testing.assert_array_almost_equal(result, [[0.8]])

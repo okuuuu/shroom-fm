@@ -301,6 +301,33 @@ def parse_radar_composite(
     return rate_mm_h, georef
 
 
+def parse_radar_quality(
+    path: Path,
+    *,
+    row_slice: slice = slice(None),
+    col_slice: slice = slice(None),
+) -> np.ndarray | None:
+    """Reads the optional per-pixel quality layer (real confirmed ODIM qualityN-subgroup
+    convention under dataset1/data1, e.g. dataset1/data1/quality1/data — NOT identified
+    by a quantity="QIND" string, no such string exists in real files) if present,
+    decoded via its own gain/offset the same way parse_radar_composite decodes the rain
+    value. Returns None — not an error, not a zero-filled array — if the file has no
+    quality subgroup at all: pipeline behavior must be identical for a file that lacks
+    one (spec Component 3), so callers must treat None as "no enrichment available
+    this slot", never as "quality is zero"."""
+    with h5py.File(path, "r") as f:
+        data1 = f["dataset1/data1"]
+        quality_keys = sorted(k for k in data1.keys() if k.startswith("quality"))
+        if not quality_keys:
+            return None
+        quality_grp = data1[quality_keys[0]]
+        raw = quality_grp["data"][row_slice, col_slice].astype(np.float64)
+        what = quality_grp["what"]
+        gain = float(what.attrs.get("gain", 1.0))
+        offset = float(what.attrs.get("offset", 0.0))
+        return raw * gain + offset
+
+
 def radar_pixel_centers(georef: dict) -> gpd.GeoDataFrame:
     x0, y0, radar_crs = _radar_origin(georef)
     row_offset = georef.get("row_offset", 0)

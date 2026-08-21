@@ -7,6 +7,7 @@ from shroom_fm.scout import (
     join_ecotone_access,
     scout_candidates_for_species,
     scout_score,
+    suppress_nearby_candidates,
     weather_coverage_ratio,
 )
 
@@ -232,3 +233,64 @@ def test_weather_coverage_ratio_is_one_when_no_eligible_candidates_exist():
     # No candidates are even eligible to begin with — vacuously "fully covered",
     # not a coverage problem to report.
     assert weather_coverage_ratio(joined_gdf, "chanterelle") == pytest.approx(1.0)
+
+
+def test_suppress_nearby_candidates_suppresses_a_close_lower_scored_candidate():
+    scored_gdf = gpd.GeoDataFrame(
+        {"id_a": [1, 3], "id_b": [2, 4], "scout_score": [1.0, 0.9]},
+        geometry=[Point(0, 0), Point(100, 0)],
+        crs="EPSG:3301",
+    )
+
+    retained, suppressed = suppress_nearby_candidates(scored_gdf, min_separation_m=400.0)
+
+    assert len(retained) == 1
+    assert retained.iloc[0]["id_a"] == 1
+    assert len(suppressed) == 1
+    assert suppressed.iloc[0]["suppressed_by_id"] == "1_2"
+    assert suppressed.iloc[0]["suppression_distance_m"] == pytest.approx(100.0)
+    assert suppressed.iloc[0]["pre_suppression_rank"] == 2
+
+
+def test_suppress_nearby_candidates_retains_candidates_beyond_threshold():
+    scored_gdf = gpd.GeoDataFrame(
+        {"id_a": [1, 3], "id_b": [2, 4], "scout_score": [1.0, 0.9]},
+        geometry=[Point(0, 0), Point(1000, 0)],
+        crs="EPSG:3301",
+    )
+
+    retained, suppressed = suppress_nearby_candidates(scored_gdf, min_separation_m=400.0)
+
+    assert len(retained) == 2
+    assert len(suppressed) == 0
+
+
+def test_suppress_nearby_candidates_checks_against_currently_retained_set_only():
+    # Point B (score 0.9) is close to A (score 1.0) and gets suppressed by A. Point C
+    # (score 0.5) is far from A but would be close to B if B had been retained --
+    # greedy NMS must check against the RETAINED set, not every prior candidate, so C
+    # is correctly retained (its nearest RETAINED neighbor is A, at 1000m away).
+    scored_gdf = gpd.GeoDataFrame(
+        {"id_a": [1, 3, 5], "id_b": [2, 4, 6], "scout_score": [1.0, 0.9, 0.5]},
+        geometry=[Point(0, 0), Point(100, 0), Point(1000, 0)],
+        crs="EPSG:3301",
+    )
+
+    retained, suppressed = suppress_nearby_candidates(scored_gdf, min_separation_m=400.0)
+
+    assert sorted(retained["id_a"]) == [1, 5]
+    assert list(suppressed["id_a"]) == [3]
+    assert suppressed.iloc[0]["suppressed_by_id"] == "1_2"
+    assert suppressed.iloc[0]["pre_suppression_rank"] == 2
+
+
+def test_suppress_nearby_candidates_handles_empty_input():
+    scored_gdf = gpd.GeoDataFrame(
+        {"id_a": [], "id_b": [], "scout_score": []}, geometry=[], crs="EPSG:3301"
+    )
+
+    retained, suppressed = suppress_nearby_candidates(scored_gdf, min_separation_m=400.0)
+
+    assert len(retained) == 0
+    assert len(suppressed) == 0
+    assert "suppressed_by_id" in suppressed.columns

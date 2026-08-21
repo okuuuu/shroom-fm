@@ -58,6 +58,73 @@ def join_ecotone_access(
 MISSING_FRUITING_DATA_REASON = "MISSING_FRUITING_DATA"
 MIN_SCOUT_WEATHER_COVERAGE = 0.90
 
+MIN_SCOUT_SEPARATION_M = 400.0
+MAX_SUPPRESSED_EXAMPLES_PER_TARGET = 3
+
+
+def suppress_nearby_candidates(
+    scored_gdf: gpd.GeoDataFrame, min_separation_m: float
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """scored_gdf must already be sorted by scout_score descending, with real geometry
+    in a metric CRS (this project's ESTONIAN_GRID_CRS) — greedy nearest-neighbor
+    suppression: walks rows in score order, keeping a candidate only if its centroid is
+    farther than min_separation_m from every already-KEPT candidate's centroid (not
+    every prior candidate — a candidate suppressed earlier never itself becomes a
+    reference point). Returns (retained, suppressed). Suppressed rows gain
+    suppressed_by_id (the retaining candidate's f"{id_a}_{id_b}", same convention as
+    rollup_daily_state's today_top_target_id_{species}), suppression_distance_m (real
+    centroid distance to the suppressor, not the threshold), and pre_suppression_rank
+    (1-based position in scored_gdf's own sorted order, before any suppression)."""
+    if len(scored_gdf) == 0:
+        empty = scored_gdf.copy()
+        empty["suppressed_by_id"] = pd.Series(dtype=object)
+        empty["suppression_distance_m"] = pd.Series(dtype=float)
+        empty["pre_suppression_rank"] = pd.Series(dtype="Int64")
+        return scored_gdf.copy(), empty
+
+    centroids = scored_gdf.geometry.centroid
+    retained_idx: list = []
+    retained_centroids: list = []
+    suppressed_records = []
+
+    for position, (idx, centroid) in enumerate(zip(scored_gdf.index, centroids), start=1):
+        nearest_distance = None
+        nearest_retained_idx = None
+        for r_idx, r_centroid in zip(retained_idx, retained_centroids):
+            d = centroid.distance(r_centroid)
+            if nearest_distance is None or d < nearest_distance:
+                nearest_distance = d
+                nearest_retained_idx = r_idx
+        if nearest_distance is not None and nearest_distance < min_separation_m:
+            retaining_row = scored_gdf.loc[nearest_retained_idx]
+            suppressed_records.append(
+                {
+                    "index": idx,
+                    "suppressed_by_id": f"{retaining_row['id_a']}_{retaining_row['id_b']}",
+                    "suppression_distance_m": nearest_distance,
+                    "pre_suppression_rank": position,
+                }
+            )
+        else:
+            retained_idx.append(idx)
+            retained_centroids.append(centroid)
+
+    retained = scored_gdf.loc[retained_idx].copy()
+
+    if suppressed_records:
+        suppressed_meta = pd.DataFrame(suppressed_records).set_index("index")
+        suppressed = scored_gdf.loc[suppressed_meta.index].copy()
+        suppressed["suppressed_by_id"] = suppressed_meta["suppressed_by_id"]
+        suppressed["suppression_distance_m"] = suppressed_meta["suppression_distance_m"]
+        suppressed["pre_suppression_rank"] = suppressed_meta["pre_suppression_rank"]
+    else:
+        suppressed = scored_gdf.iloc[0:0].copy()
+        suppressed["suppressed_by_id"] = pd.Series(dtype=object)
+        suppressed["suppression_distance_m"] = pd.Series(dtype=float)
+        suppressed["pre_suppression_rank"] = pd.Series(dtype="Int64")
+
+    return retained, suppressed
+
 
 def scout_score(
     ecotone_score: float | None,

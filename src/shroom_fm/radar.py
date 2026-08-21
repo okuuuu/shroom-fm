@@ -1,9 +1,8 @@
-import concurrent.futures
 import os
 import re
 import time
 from collections import deque
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -15,7 +14,6 @@ import requests
 
 OPERA_S3_BASE_URL = "https://s3.waw3-1.cloudferro.com/"
 OPERA_S3_BUCKET = "openradar-24h"
-MAX_WORKERS = 3
 _S3_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 _HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 _KEY_TIMESTAMP_RE = re.compile(r"@(\d{8}T\d{4})@0@RATE\.h5$")
@@ -83,30 +81,41 @@ def download_opera_object(key: str, cache_dir: Path) -> Path:
     return path
 
 
+_S3_WINDOW_HOURS = 24
+
+
 def fetch_new_radar_composites(
-    cache_dir: Path, since: datetime, *, max_workers: int = MAX_WORKERS
+    cache_dir: Path, since: datetime, *, now: datetime | None = None
 ) -> list[Path]:
-    documents = query_radar_documents(since)
+    """Fetches new OPERA RATE composites into cache_dir, covering [since, now].
+
+    Only the last ~_S3_WINDOW_HOURS is servable at all — that's the confirmed-working,
+    rolling S3 window (Task 2's list_recent_radar_objects/download_opera_object). A
+    live investigation into the anonymous ORD REST API
+    (docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md) found it does
+    NOT expose data older than that same rolling window — every historical query it
+    tried returned 204 No Content, and every real file link it ever returned pointed
+    into this same S3 bucket. So a `since` older than the S3 window raises
+    NotImplementedError rather than silently returning a partial/wrong result.
+    """
+    now = now or datetime.now(timezone.utc)
+    s3_window_start = now - timedelta(hours=_S3_WINDOW_HOURS)
+    if since < s3_window_start:
+        raise NotImplementedError(
+            "Historical OPERA backfill (>24h old) is not yet implemented — see "
+            "docs/superpowers/plans/2026-08-21-opera-rest-backfill-findings.md for what "
+            "was tried against the ORD REST API. Only the last ~24h (S3) is currently "
+            "fetchable."
+        )
+
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if not documents:
-        return []
-    paths: list[Path | None] = [None] * len(documents)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_index = {
-            executor.submit(download_radar_composite, doc, cache_dir): i
-            for i, doc in enumerate(documents)
-        }
-        done = 0
-        try:
-            for future in concurrent.futures.as_completed(future_to_index):
-                index = future_to_index[future]
-                paths[index] = future.result()
-                done += 1
-                print(f"  downloaded {done}/{len(documents)} radar composites")
-        except Exception:
-            for pending in future_to_index:
-                pending.cancel()
-            raise
+    paths: list[Path] = []
+    current_date = since.date()
+    while current_date <= now.date():
+        for obj in list_recent_radar_objects(current_date):
+            if since <= obj["timestamp"] <= now:
+                paths.append(download_opera_object(obj["key"], cache_dir))
+        current_date += timedelta(days=1)
     return paths
 
 
@@ -276,8 +285,6 @@ def accumulate_rainfall(
     now: datetime,
     eraldis_bounds_wgs84: tuple[float, float, float, float],
 ) -> tuple[gpd.GeoDataFrame, dict[str, float]]:
-    from datetime import timedelta
-
     window_start = now - timedelta(days=_RADAR_WINDOW_DAYS)
     files = cached_radar_files(cache_dir, window_start, now)
 

@@ -508,29 +508,120 @@ def test_newest_cached_radar_timestamp_returns_max(tmp_path):
     assert newest_cached_radar_timestamp(cache_dir) == _utc(2026, 8, 18, 10)
 
 
-def test_fetch_new_radar_composites_downloads_all_queried_documents(
+def test_fetch_new_radar_composites_downloads_s3_objects_within_requested_window(
     tmp_path, monkeypatch
 ):
-    documents = [
-        {"id": 1, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 0)},
-        {"id": 2, "file_id": 1, "timestamp": _utc(2026, 8, 18, 9, 5)},
+    # Single calendar day. One object is before `since` and must be excluded; two
+    # fall inside [since, now] and must be downloaded.
+    now = _utc(2026, 8, 21, 10, 0)
+    since = _utc(2026, 8, 21, 8, 0)
+
+    objects_by_date = {
+        _date(2026, 8, 21): [
+            {
+                "key": "2026/08/21/OPERA/COMP/OPERA@20260821T0745@0@RATE.h5",
+                "timestamp": _utc(2026, 8, 21, 7, 45),
+            },
+            {
+                "key": "2026/08/21/OPERA/COMP/OPERA@20260821T0800@0@RATE.h5",
+                "timestamp": _utc(2026, 8, 21, 8, 0),
+            },
+            {
+                "key": "2026/08/21/OPERA/COMP/OPERA@20260821T0900@0@RATE.h5",
+                "timestamp": _utc(2026, 8, 21, 9, 0),
+            },
+        ]
+    }
+
+    def fake_list(prefix_date):
+        return objects_by_date.get(prefix_date, [])
+
+    downloaded_keys = []
+
+    def fake_download(key, cache_dir_arg):
+        downloaded_keys.append(key)
+        path = cache_dir_arg / f"fake-{len(downloaded_keys)}.h5"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x89HDF\r\n\x1a\n" + b"bytes")
+        return path
+
+    monkeypatch.setattr("shroom_fm.radar.list_recent_radar_objects", fake_list)
+    monkeypatch.setattr("shroom_fm.radar.download_opera_object", fake_download)
+
+    cache_dir = tmp_path / "radar_cache"
+    result = fetch_new_radar_composites(cache_dir, since, now=now)
+
+    assert downloaded_keys == [
+        "2026/08/21/OPERA/COMP/OPERA@20260821T0800@0@RATE.h5",
+        "2026/08/21/OPERA/COMP/OPERA@20260821T0900@0@RATE.h5",
     ]
-    monkeypatch.setattr(
-        "shroom_fm.radar.query_radar_documents", lambda since: documents
-    )
+    assert len(result) == 2
+    assert all(p.exists() for p in result)
 
-    class _FakeResponse:
-        content = b"\x89HDF\r\n\x1a\n" + b"bytes"
 
+def test_fetch_new_radar_composites_loops_over_each_date_in_range(
+    tmp_path, monkeypatch
+):
+    # since/now straddle a UTC midnight boundary -> must query both calendar dates.
+    now = _utc(2026, 8, 21, 1, 0)
+    since = _utc(2026, 8, 20, 23, 0)
+
+    objects_by_date = {
+        _date(2026, 8, 20): [
+            {
+                "key": "2026/08/20/OPERA/COMP/OPERA@20260820T2330@0@RATE.h5",
+                "timestamp": _utc(2026, 8, 20, 23, 30),
+            }
+        ],
+        _date(2026, 8, 21): [
+            {
+                "key": "2026/08/21/OPERA/COMP/OPERA@20260821T0030@0@RATE.h5",
+                "timestamp": _utc(2026, 8, 21, 0, 30),
+            }
+        ],
+    }
+    queried_dates = []
+
+    def fake_list(prefix_date):
+        queried_dates.append(prefix_date)
+        return objects_by_date.get(prefix_date, [])
+
+    monkeypatch.setattr("shroom_fm.radar.list_recent_radar_objects", fake_list)
     monkeypatch.setattr(
-        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
+        "shroom_fm.radar.download_opera_object",
+        lambda key, cache_dir_arg: cache_dir_arg / f"{key[-20:].replace('/', '_')}",
     )
 
     cache_dir = tmp_path / "radar_cache"
-    result = fetch_new_radar_composites(cache_dir, _utc(2026, 8, 18, 8))
+    result = fetch_new_radar_composites(cache_dir, since, now=now)
 
+    assert queried_dates == [_date(2026, 8, 20), _date(2026, 8, 21)]
     assert len(result) == 2
-    assert all(p.exists() for p in result)
+
+
+def test_fetch_new_radar_composites_raises_for_data_older_than_s3_window(tmp_path):
+    now = _utc(2026, 8, 21, 10, 0)
+    since = now - timedelta(days=3)  # far older than the ~24h S3 rolling window
+
+    cache_dir = tmp_path / "radar_cache"
+    with pytest.raises(NotImplementedError, match="Historical OPERA backfill"):
+        fetch_new_radar_composites(cache_dir, since, now=now)
+
+
+def test_fetch_new_radar_composites_does_not_raise_at_exactly_the_24h_boundary(
+    tmp_path, monkeypatch
+):
+    now = _utc(2026, 8, 21, 10, 0)
+    since = now - timedelta(hours=24)  # exactly at the boundary, must NOT raise
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.list_recent_radar_objects", lambda prefix_date: []
+    )
+
+    cache_dir = tmp_path / "radar_cache"
+    result = fetch_new_radar_composites(cache_dir, since, now=now)
+
+    assert result == []
 
 
 def _write_fake_composite(

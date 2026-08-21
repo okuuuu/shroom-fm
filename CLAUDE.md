@@ -328,6 +328,22 @@ show real per-stand spatial variance this run — confirmed directly:
 happened outside the extended dry spell documented under FruitingScore below, which was
 observed during the prior KAIA-era runs).
 
+**Operational note: leftover pre-migration KAIA cache files.** A real production
+checkout's `data/radar_cache/` may still hold `.h5` files downloaded before this OPERA
+migration — same general `{timestamp}_{suffix}.h5` naming shape but a completely
+different internal HDF5 structure (KAIA has no `dataset1/data1/what` group, and a
+720×720 Mercator grid rather than OPERA's 1900×2200 LAEA grid) that would crash
+`parse_radar_composite` if ever read. `cached_radar_files`/`expire_old_radar_composites`/
+`newest_cached_radar_timestamp` now glob specifically for `*_RATE.h5` (the real,
+confirmed OPERA cache filename suffix), so any leftover KAIA file is invisible to this
+code by construction and will never be read or crash a run — this is a structural fix,
+not just a documentation warning. The new code also never expires a file it never sees,
+so old KAIA files will sit in `data/radar_cache/` indefinitely unless removed manually.
+A one-time `mv data/radar_cache/*.h5 data/radar_cache_kaia_archive_YYYY_MM_DD/` (moving
+aside whatever doesn't match `*_RATE.h5`, then deleting once confirmed safe) is
+recommended to reclaim the disk space, but this is now a cleanup convenience, not a
+correctness requirement — the code is safe either way after this fix.
+
 ## FruitingScore (weather-driven scoring)
 
 `src/shroom_fm/fruiting.py` combines the weather-refresh features above into a per-species,
@@ -350,6 +366,17 @@ real logged observations (same discipline as `habitat.py`'s `HOST_PROFILES`/
 `SITE_TYPE_PROFILES`). `FruitingScore` is `None` (never a fabricated neutral value) if
 `MoistureTrigger`, `TemperatureModifier`, or `PersistenceModifier` is `None`; `SeasonPrior`
 is a pure calendar function and never returns `None`.
+
+**Dry spell note (KAIA-era, resolved):** the 2026-08-20 real pipeline run documented
+just below ("Real pipeline run, verified live...") was conducted immediately after a
+`refresh_weather.py` run that landed during an extended stretch of unusually dry
+weather in the then-current KAIA radar record — real, current weather at the time, not
+a bug — which pushed nearly every stand's `MoistureTrigger` toward its floor and
+produced the uniformly near-zero `fruiting_score_*` values reported below (e.g. the
+`fruiting_score=0.000113` example). This is unrelated to, and resolved well before, the
+OPERA migration's own 2026-08-21 real-rainfall verification documented under "Weather
+refresh" above, which explicitly ran outside this dry spell and shows normal
+spatially-varying rainfall instead.
 
 Two pipeline scripts apply this: `scripts/score_fruiting.py` adds `fruiting_score_{species}`
 (plus `fruiting_moisture_score_{species}`/`fruiting_season_prior_{species}` and the two

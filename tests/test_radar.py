@@ -4,7 +4,6 @@ import geopandas as gpd
 import h5py
 import numpy as np
 import pytest
-import requests
 
 from shroom_fm.radar import (
     accumulate_rainfall,
@@ -74,7 +73,7 @@ def test_list_recent_radar_objects_parses_real_s3_listing_xml(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "shroom_fm.radar.requests.get", lambda url, timeout: _FakeResponse()
+        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
     )
 
     objects = list_recent_radar_objects(_date(2026, 8, 21))
@@ -104,7 +103,7 @@ def test_list_recent_radar_objects_returns_empty_for_rolled_off_date(monkeypatch
             pass
 
     monkeypatch.setattr(
-        "shroom_fm.radar.requests.get", lambda url, timeout: _FakeResponse()
+        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
     )
 
     objects = list_recent_radar_objects(_date(2026, 8, 19))
@@ -120,7 +119,7 @@ def test_download_opera_object_writes_cache_file_from_real_filename(tmp_path, mo
             pass
 
     monkeypatch.setattr(
-        "shroom_fm.radar.requests.get", lambda url, timeout: _FakeResponse()
+        "shroom_fm.radar.get_with_retry", lambda url, timeout: _FakeResponse()
     )
 
     cache_dir = tmp_path / "radar_cache"
@@ -146,7 +145,7 @@ def test_download_opera_object_skips_if_already_cached(tmp_path, monkeypatch):
     expected_path = cache_dir / "20260821T001500Z_RATE.h5"
     expected_path.write_bytes(b"\x89HDF\r\n\x1a\n" + b"already here")
 
-    monkeypatch.setattr("shroom_fm.radar.requests.get", _fake_get)
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", _fake_get)
 
     result = download_opera_object(
         "2026/08/21/OPERA/COMP/OPERA@20260821T0015@0@RATE.h5", cache_dir
@@ -154,6 +153,18 @@ def test_download_opera_object_skips_if_already_cached(tmp_path, monkeypatch):
 
     assert result == expected_path
     assert calls == []
+
+
+def test_download_opera_object_raises_value_error_for_unrecognized_key_shape(tmp_path):
+    # Regression test: a key that doesn't match the expected
+    # ...@YYYYMMDDTHHMM@0@RATE.h5 shape must raise a clear ValueError from
+    # _timestamp_from_key, not a bare AttributeError from a None regex match.
+    cache_dir = tmp_path / "radar_cache"
+
+    with pytest.raises(ValueError, match="does not match expected OPERA RATE.h5"):
+        download_opera_object(
+            "2026/08/21/OPERA/COMP/OPERA@20260821T0015@0@ACRR.h5", cache_dir
+        )
 
 
 def test_cached_radar_timestamp_parses_filename(tmp_path):
@@ -164,8 +175,8 @@ def test_cached_radar_timestamp_parses_filename(tmp_path):
 def test_expire_old_radar_composites_removes_only_stale_files(tmp_path):
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
-    fresh = cache_dir / "20260818T090000Z_1.h5"
-    stale = cache_dir / "20260101T000000Z_2.h5"
+    fresh = cache_dir / "20260818T090000Z_RATE.h5"
+    stale = cache_dir / "20260101T000000Z_RATE.h5"
     fresh.write_bytes(b"x")
     stale.write_bytes(b"x")
 
@@ -178,8 +189,8 @@ def test_expire_old_radar_composites_removes_only_stale_files(tmp_path):
 def test_cached_radar_files_filters_to_window(tmp_path):
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
-    in_window = cache_dir / "20260818T090000Z_1.h5"
-    before_window = cache_dir / "20260801T000000Z_2.h5"
+    in_window = cache_dir / "20260818T090000Z_RATE.h5"
+    before_window = cache_dir / "20260801T000000Z_RATE.h5"
     in_window.write_bytes(b"x")
     before_window.write_bytes(b"x")
 
@@ -195,8 +206,8 @@ def test_newest_cached_radar_timestamp_returns_none_for_empty_cache(tmp_path):
 def test_newest_cached_radar_timestamp_returns_max(tmp_path):
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
-    (cache_dir / "20260818T090000Z_1.h5").write_bytes(b"x")
-    (cache_dir / "20260818T100000Z_2.h5").write_bytes(b"x")
+    (cache_dir / "20260818T090000Z_RATE.h5").write_bytes(b"x")
+    (cache_dir / "20260818T100000Z_RATE.h5").write_bytes(b"x")
 
     assert newest_cached_radar_timestamp(cache_dir) == _utc(2026, 8, 18, 10)
 
@@ -326,7 +337,7 @@ def test_list_archived_radar_objects_parses_real_s3_listing_xml_from_archive_buc
         captured_urls.append(url)
         return _FakeResponse()
 
-    monkeypatch.setattr("shroom_fm.radar.requests.get", fake_get)
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", fake_get)
 
     objects = list_archived_radar_objects(_date(2026, 6, 22))
 
@@ -349,7 +360,7 @@ def test_download_archived_radar_object_hits_archive_bucket_url(tmp_path, monkey
         captured_urls.append(url)
         return _FakeResponse()
 
-    monkeypatch.setattr("shroom_fm.radar.requests.get", fake_get)
+    monkeypatch.setattr("shroom_fm.radar.get_with_retry", fake_get)
 
     cache_dir = tmp_path / "radar_cache"
     result = download_archived_radar_object(
@@ -663,10 +674,10 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
     cache_dir.mkdir()
 
     # 3 files, 5 minutes apart, each with a 2x2 grid; pixel [0,0] rains every time,
-    # pixel [1,1] never rains. Use old KAIA grid coordinates to ensure pixels overlap
-    # with the test bbox (20-30°E, 56-62°N).
+    # pixel [1,1] never rains. Uses a synthetic small grid positioned over Estonia to
+    # ensure pixels overlap with the test bbox (20-30°E, 56-62°N).
     _write_fake_composite(
-        cache_dir / "20260815T000000Z_1.h5",
+        cache_dir / "20260815T000000Z_RATE.h5",
         rate_grid=[[1.0, 0.0], [0.0, 0.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -675,7 +686,7 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
         ul_lat=61.33568305549931,
     )
     _write_fake_composite(
-        cache_dir / "20260815T000500Z_2.h5",
+        cache_dir / "20260815T000500Z_RATE.h5",
         rate_grid=[[2.0, 0.0], [0.0, 0.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -684,7 +695,7 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
         ul_lat=61.33568305549931,
     )
     _write_fake_composite(
-        cache_dir / "20260815T001000Z_3.h5",
+        cache_dir / "20260815T001000Z_RATE.h5",
         rate_grid=[[0.0, 0.0], [0.0, 0.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -738,7 +749,7 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
     for i in range(slots_3d + 1):
         ts = now - timedelta(minutes=15 * i)
         _write_fake_composite(
-            cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_{i}.h5",
+            cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_RATE.h5",
             rate_grid=[[0.0, 0.0], [0.0, 0.0]],
             projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
             xscale=359.07,
@@ -751,7 +762,7 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
     for days_ago in (5, 8, 11, 13):
         ts = now - timedelta(days=days_ago)
         _write_fake_composite(
-            cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_old{days_ago}.h5",
+            cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_RATE.h5",
             rate_grid=[[0.0, 0.0], [0.0, 0.0]],
             projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
             xscale=359.07,
@@ -784,7 +795,7 @@ def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path)
     for i, ts in enumerate(["20260815T000000Z", "20260815T000500Z", "20260815T001000Z",
                              "20260815T001500Z", "20260815T002000Z"]):
         _write_fake_composite(
-            cache_dir / f"{ts}_{i}.h5",
+            cache_dir / f"{ts}_RATE.h5",
             rate_grid=[[8.0]],
             projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
             xscale=359.07,
@@ -796,7 +807,7 @@ def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path)
     # Dry gap > 6h, then a NEW event that never reaches 5mm — must not affect the
     # already-recorded significant/strong stats from the first event.
     _write_fake_composite(
-        cache_dir / "20260815T080000Z_6.h5",
+        cache_dir / "20260815T080000Z_RATE.h5",
         rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -825,7 +836,7 @@ def test_accumulate_rainfall_never_had_a_significant_event_is_nan(tmp_path):
     cache_dir.mkdir()
     # Single slot, only 1.0mm — never reaches SIGNIFICANT_EVENT_MM=5.0.
     _write_fake_composite(
-        cache_dir / "20260815T000000Z_1.h5",
+        cache_dir / "20260815T000000Z_RATE.h5",
         rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -851,7 +862,7 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     cache_dir.mkdir()
     # Two slots close together (1.0mm each, same 24h window) = 2.0mm concentrated.
     _write_fake_composite(
-        cache_dir / "20260815T000000Z_1.h5",
+        cache_dir / "20260815T000000Z_RATE.h5",
         rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -860,7 +871,7 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
         ul_lat=61.33568305549931,
     )
     _write_fake_composite(
-        cache_dir / "20260815T000500Z_2.h5",
+        cache_dir / "20260815T000500Z_RATE.h5",
         rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -870,7 +881,7 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     )
     # A 3rd slot 5 days later (well outside any 24h window containing the first two).
     _write_fake_composite(
-        cache_dir / "20260820T000000Z_3.h5",
+        cache_dir / "20260820T000000Z_RATE.h5",
         rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
@@ -1269,3 +1280,19 @@ def test_assign_radar_to_eraldis_finds_pixel_for_a_small_stand_not_centered_on_a
     result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
 
     assert result.loc[0, "rain_3d_mm"] == pytest.approx(1.0)
+
+
+def test_assign_radar_to_eraldis_returns_named_columns_for_empty_eraldis_gdf():
+    """Regression test: the empty-eraldis_gdf branch must return a DataFrame with the
+    correct named columns (matching the empty-radar_points branch just below), not a
+    columnless frame — callers like weather.py unconditionally do
+    radar_joined["coverage_3d"] etc. and would KeyError on a columnless empty result."""
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    eraldis_gdf = gpd.GeoDataFrame({"id": []}, geometry=[], crs="EPSG:3301")
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm", "coverage_3d"))
+
+    assert list(result.columns) == ["rain_3d_mm", "coverage_3d"]
+    assert len(result) == 0

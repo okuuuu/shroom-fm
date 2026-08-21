@@ -1,6 +1,5 @@
 import os
 import re
-import time
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,7 +9,8 @@ import geopandas as gpd
 import h5py
 import numpy as np
 import pyproj
-import requests
+
+from shroom_fm.retry import get_with_retry
 
 OPERA_S3_BASE_URL = "https://s3.waw3-1.cloudferro.com/"
 OPERA_S3_BUCKET = "openradar-24h"
@@ -28,6 +28,17 @@ OPERA_ARCHIVE_S3_BUCKET = "openradar-archive"
 _S3_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 _HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 _KEY_TIMESTAMP_RE = re.compile(r"@(\d{8}T\d{4})@0@RATE\.h5$")
+
+
+def _timestamp_from_key(key: str) -> datetime:
+    """Parses the OPERA RATE.h5 timestamp embedded in an S3 object key. Shared by both
+    the listing and download paths so the match-and-parse logic only lives in one
+    place. Raises a clear ValueError — not a bare AttributeError from a `None` regex
+    match — if key doesn't match the expected `...@YYYYMMDDTHHMM@0@RATE.h5` shape."""
+    match = _KEY_TIMESTAMP_RE.search(key)
+    if match is None:
+        raise ValueError(f"Key does not match expected OPERA RATE.h5 pattern: {key!r}")
+    return datetime.strptime(match.group(1), "%Y%m%dT%H%M").replace(tzinfo=timezone.utc)
 
 
 def _validate_coverage(value: float, *, label: str) -> float:
@@ -58,19 +69,22 @@ def _list_radar_objects(bucket: str, prefix_date: date) -> list[dict]:
     pagination for broader prefixes (confirmed live, not needed here)."""
     prefix = f"{prefix_date:%Y/%m/%d}/OPERA/COMP/"
     url = f"{OPERA_S3_BASE_URL}{bucket}/?list-type=2&prefix={prefix}&max-keys=1000"
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+    # get_with_retry (shroom_fm.retry, a generic HTTP-retry helper already used by
+    # wfs.py/enrich.py/concurrent_fetch.py) gives this real ~1,344-request backfill
+    # transient-network resilience the original bare requests.get here lacked — it
+    # also calls raise_for_status() internally, so no separate call is needed here.
+    response = get_with_retry(url, timeout=30)
     root = ElementTree.fromstring(response.text)
 
     objects = []
     for content in root.findall("s3:Contents", _S3_NAMESPACE):
         key = content.find("s3:Key", _S3_NAMESPACE).text
-        match = _KEY_TIMESTAMP_RE.search(key)
-        if match is None:
+        try:
+            timestamp = _timestamp_from_key(key)
+        except ValueError:
+            # Not a RATE.h5 key (e.g. a sibling ACRR/DBZH product listed in the same
+            # prefix) — skip it, not an error.
             continue
-        timestamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M").replace(
-            tzinfo=timezone.utc
-        )
         objects.append({"key": key, "timestamp": timestamp})
     return objects
 
@@ -96,10 +110,7 @@ def cached_radar_timestamp(path: Path) -> datetime:
 
 
 def _download_radar_object(bucket: str, key: str, cache_dir: Path) -> Path:
-    match = _KEY_TIMESTAMP_RE.search(key)
-    timestamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M").replace(
-        tzinfo=timezone.utc
-    )
+    timestamp = _timestamp_from_key(key)
     # Same cache filename convention regardless of source bucket — both buckets carry
     # identical real data for any timestamp they both cover, so a file already fetched
     # from one bucket correctly counts as a cache hit if later requested from the
@@ -109,8 +120,9 @@ def _download_radar_object(bucket: str, key: str, cache_dir: Path) -> Path:
         return path
 
     url = f"{OPERA_S3_BASE_URL}{bucket}/{key}"
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+    # get_with_retry — see _list_radar_objects for why (transient-network resilience
+    # over a real ~1,344-request cold backfill); it already calls raise_for_status().
+    response = get_with_retry(url, timeout=30)
 
     if not response.content.startswith(_HDF5_SIGNATURE):
         raise ValueError(
@@ -172,6 +184,10 @@ def fetch_new_radar_composites(
         else:
             objects = list_archived_radar_objects(current_date)
             download = download_archived_radar_object
+        # Sequential downloads by deliberate choice for this migration (simplicity
+        # over speed for an on-demand script, ~14min for a real 14-day cold backfill)
+        # — not an oversight. KAIA-era code used a 3-worker ThreadPoolExecutor here;
+        # re-adding concurrency for OPERA is a deliberate, ruled-on deferral.
         for obj in objects:
             if since <= obj["timestamp"] <= now:
                 paths.append(download(obj["key"], cache_dir))
@@ -182,7 +198,12 @@ def fetch_new_radar_composites(
 def expire_old_radar_composites(cache_dir: Path, cutoff: datetime) -> None:
     if not cache_dir.exists():
         return
-    for path in cache_dir.glob("*.h5"):
+    # Glob specifically for *_RATE.h5 (the real _opera_cache_filename suffix), not the
+    # generic *.h5, so a leftover file from a different product/source (e.g. a stray
+    # pre-migration KAIA-era cache file, an ACRR file, a DBZH file) is never picked up
+    # by construction — see CLAUDE.md's "Weather refresh" section for why this matters
+    # for a real production checkout's cache directory.
+    for path in cache_dir.glob("*_RATE.h5"):
         if cached_radar_timestamp(path) < cutoff:
             path.unlink()
 
@@ -197,10 +218,13 @@ def cached_radar_files(
     1.0044642857142858, bit-for-bit the value once shipped in production)."""
     if not cache_dir.exists():
         return []
+    # Glob specifically for *_RATE.h5 — see expire_old_radar_composites' comment above
+    # for why: this makes any leftover non-OPERA-RATE file (KAIA-era, ACRR, DBZH, ...)
+    # invisible to this function by construction.
     return sorted(
         (
             p
-            for p in cache_dir.glob("*.h5")
+            for p in cache_dir.glob("*_RATE.h5")
             if window_start <= cached_radar_timestamp(p) < window_end
         ),
         key=cached_radar_timestamp,
@@ -210,7 +234,8 @@ def cached_radar_files(
 def newest_cached_radar_timestamp(cache_dir: Path) -> datetime | None:
     if not cache_dir.exists():
         return None
-    files = list(cache_dir.glob("*.h5"))
+    # Glob specifically for *_RATE.h5 — see expire_old_radar_composites' comment above.
+    files = list(cache_dir.glob("*_RATE.h5"))
     if not files:
         return None
     return max(cached_radar_timestamp(p) for p in files)
@@ -254,8 +279,9 @@ def radar_bbox_slice(
     """Row/col slice covering bounds_wgs84 (min_lon, min_lat, max_lon, max_lat) within
     the full radar grid described by georef, so per-file processing only touches the
     small sub-region relevant to this project's home area instead of the whole
-    country-plus grid (real grid is 1500x1500 — untrimmed processing of ~4000 cached
-    files would be far slower than necessary)."""
+    country-plus grid (real OPERA grid is 1900x2200 — untrimmed processing of the
+    ~1,344 files cached for a 14-day window at 15-minute cadence would be far slower
+    than necessary)."""
     x0, y0, radar_crs = _radar_origin(georef)
     to_radar = pyproj.Transformer.from_crs("EPSG:4326", radar_crs, always_xy=True)
     min_lon, min_lat, max_lon, max_lat = bounds_wgs84
@@ -282,7 +308,7 @@ def parse_radar_composite(
 ) -> tuple[np.ndarray, dict]:
     with h5py.File(path, "r") as f:
         # h5py slices at the dataset level — only the requested sub-region is read
-        # from disk, not the full 1500x1500 array.
+        # from disk, not the full 1900x2200 array.
         raw = f["dataset1/data1/data"][row_slice, col_slice]
         # Real confirmed OPERA structure (verified 2026-08-21 against live-downloaded
         # openradar-archive files): gain/offset/nodata/undetect/quantity live under
@@ -381,8 +407,6 @@ def accumulate_rainfall(
     now: datetime,
     eraldis_bounds_wgs84: tuple[float, float, float, float],
 ) -> tuple[gpd.GeoDataFrame, dict[str, float]]:
-    from datetime import timedelta
-
     window_start = now - timedelta(days=_RADAR_WINDOW_DAYS)
     files = cached_radar_files(cache_dir, window_start, now)
 
@@ -598,7 +622,9 @@ def accumulate_rainfall(
     points["coverage_3d"] = coverage_3d_px.ravel()
     points["coverage_7d"] = coverage_7d_px.ravel()
     points["coverage_14d"] = coverage_14d_px.ravel()
-    quality_mean = np.where(quality_count > 0, quality_sum / np.maximum(quality_count, 1), np.nan)
+    quality_mean = np.where(
+        quality_count > 0, quality_sum / np.maximum(quality_count, 1), np.nan
+    )
     points["quality_mean"] = quality_mean.ravel()
     points = points.to_crs("EPSG:3301")
     return points, coverage
@@ -700,8 +726,15 @@ def assign_radar_to_eraldis(
                     candidates = prefilter.loc[[nearest_idx]]
         record = {}
         for col in columns:
+            # NOTE: dropna() here collapses two different real meanings of NaN into
+            # one — "no qualifying event ever" (a real, meaningful NaN for columns
+            # like hours_since_any_rain/hours_since_significant_rain) is treated the
+            # same as "invalid observation". Currently harmless since real eraldis
+            # stands rarely span multiple 2km pixels (so there's rarely more than one
+            # candidate value to average over in the first place), but worth flagging
+            # for a future reader/caller that might rely on averaging over many pixels.
             valid_values = candidates[col].dropna()
             record[col] = float(valid_values.mean()) if len(valid_values) else None
         records.append(record)
 
-    return pd.DataFrame(records, index=eraldis_gdf.index)
+    return pd.DataFrame(records, index=eraldis_gdf.index, columns=list(columns))

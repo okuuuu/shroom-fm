@@ -155,7 +155,7 @@ def _make_meps_points():
     )
 
 
-def test_refresh_weather_joins_nearest_radar_and_meps_points(monkeypatch, tmp_path):
+def test_refresh_weather_joins_radar_and_meps_points(monkeypatch, tmp_path):
     eraldis_gdf = gpd.GeoDataFrame(
         {"id": [1]}, geometry=[Point(24.0, 59.0)], crs="EPSG:4326"
     )
@@ -645,3 +645,13 @@ def test_refresh_weather_uses_per_stand_coverage_not_one_national_value(
     # (_bin_difference, _null_if_degraded_per_stand) already use throughout.
     assert pd.isna(result.loc[1, "rain_3d_mm"])
     assert result.loc[1, "weather_data_coverage"] == pytest.approx(0.2)
+    # weather_data_quality (the STRING label, not just the numeric coverage ratio) must
+    # also genuinely differ per stand — stand 0 fully covered on radar and healthy on
+    # MEPS -> "complete"; stand 1 degraded on all three radar windows (coverage 0.2 <
+    # MIN_RADAR_COVERAGE=0.7) -> all three partial_radar_gap_* flags, joined by ";" in
+    # weather_data_quality's own ";".join(flags) format (see weather_data_quality()).
+    assert result.loc[0, "weather_data_quality"] == "complete"
+    assert result.loc[1, "weather_data_quality"] == (
+        "partial_radar_gap_3d;partial_radar_gap_7d;partial_radar_gap_14d"
+    )
+    assert "partial_radar_gap" in result.loc[1, "weather_data_quality"]

@@ -108,7 +108,12 @@ def refresh_weather(
     crs = eraldis_gdf.crs
     bounds = tuple(eraldis_gdf.to_crs("EPSG:4326").total_bounds)
 
-    radar_points, radar_coverage_national = accumulate_rainfall(radar_cache_dir, now, bounds)
+    # accumulate_rainfall's second return value (the old national/dataset-wide coverage
+    # dict) is deliberately unused here — coverage is computed per-stand below from each
+    # stand's own joined coverage_Nd columns instead. The call itself stays: the
+    # national-coverage computation inside accumulate_rainfall is still load-bearing for
+    # its own internal 0<=coverage<=1 invariant validation.
+    radar_points, _ = accumulate_rainfall(radar_cache_dir, now, bounds)
     meps_points, meps_coverage, meps_newest_hour = accumulate_meps_features(now, bounds)
 
     eraldis_projected = eraldis_gdf.to_crs(ESTONIAN_GRID_CRS)

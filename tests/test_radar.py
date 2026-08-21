@@ -1,5 +1,6 @@
 from datetime import date as _date, datetime, timedelta, timezone
 
+import geopandas as gpd
 import h5py
 import numpy as np
 import pytest
@@ -1117,3 +1118,113 @@ def test_validate_coverage_raises_on_a_value_above_one():
 def test_validate_coverage_raises_on_a_negative_value():
     with pytest.raises(AssertionError, match="7d"):
         _validate_coverage(-0.1, label="7d")
+
+
+from shapely.geometry import box as _box
+
+
+def _make_radar_points_grid():
+    """A tiny 2x2 EPSG:3301 point grid, 2000m spacing, mimicking accumulate_rainfall's
+    real OPERA-resolution output shape, for testing assign_radar_to_eraldis."""
+    return gpd.GeoDataFrame(
+        {
+            "row": [0, 0, 1, 1],
+            "col": [0, 1, 0, 1],
+            "rain_3d_mm": [1.0, 2.0, np.nan, 4.0],
+            "coverage_3d": [1.0, 1.0, 0.0, 1.0],
+        },
+        geometry=gpd.points_from_xy(
+            [500000, 502000, 500000, 502000], [6500000, 6500000, 6498000, 6498000]
+        ),
+        crs="EPSG:3301",
+    )
+
+
+def test_assign_radar_to_eraldis_point_sample_inside_one_pixel():
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    # A tiny stand centered right on pixel (row=0,col=0)'s own point (500000, 6500000)
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[_box(499900, 6499900, 500100, 6500100)],
+        crs="EPSG:3301",
+    )
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
+
+    assert result.loc[0, "rain_3d_mm"] == pytest.approx(1.0)
+
+
+def test_assign_radar_to_eraldis_averages_over_multiple_intersecting_valid_pixels():
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    # A large stand spanning all 4 pixels: (0,0) [rain=1.0], (0,1) [rain=2.0],
+    # (1,0) [rain=NaN], (1,1) [rain=4.0]
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[_box(499000, 6497000, 503000, 6501000)],
+        crs="EPSG:3301",
+    )
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
+
+    # Spans all 4 pixels; pixel (1,0) has NaN rain (zero valid observations there) and
+    # must be excluded from the mean, not treated as 0.0 — mean of [1.0, 2.0, 4.0]
+    assert result.loc[0, "rain_3d_mm"] == pytest.approx((1.0 + 2.0 + 4.0) / 3)
+
+
+def test_assign_radar_to_eraldis_returns_none_when_zero_valid_pixels_intersect():
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    # A stand entirely over pixel (1,0), which has NaN rain (zero valid observations)
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[_box(499900, 6497900, 500100, 6498100)],
+        crs="EPSG:3301",
+    )
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
+
+    assert result.loc[0, "rain_3d_mm"] is None
+
+
+def test_assign_radar_to_eraldis_returns_none_when_stand_is_far_outside_the_grid():
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    # A stand 500km away from the whole radar_points grid — no sjoin_nearest fallback,
+    # this must be None, never a value borrowed from a distant pixel. This is the
+    # direct regression test for the original bug report (stands 40-60km outside
+    # KAIA's grid silently getting a fabricated near-zero value via unbounded
+    # sjoin_nearest).
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1]},
+        geometry=[_box(1000000, 7000000, 1000100, 7000100)],
+        crs="EPSG:3301",
+    )
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
+
+    assert result.loc[0, "rain_3d_mm"] is None
+
+
+def test_assign_radar_to_eraldis_handles_multiple_stands_independently():
+    from shroom_fm.radar import assign_radar_to_eraldis
+
+    radar_points = _make_radar_points_grid()
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2]},
+        geometry=[
+            _box(499900, 6499900, 500100, 6500100),  # pixel (0,0), rain=1.0
+            _box(501900, 6499900, 502100, 6500100),  # pixel (0,1), rain=2.0
+        ],
+        crs="EPSG:3301",
+    )
+
+    result = assign_radar_to_eraldis(eraldis_gdf, radar_points, ("rain_3d_mm",))
+
+    assert result.loc[0, "rain_3d_mm"] == pytest.approx(1.0)
+    assert result.loc[1, "rain_3d_mm"] == pytest.approx(2.0)

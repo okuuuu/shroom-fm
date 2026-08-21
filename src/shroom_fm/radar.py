@@ -598,3 +598,44 @@ def accumulate_rainfall(
     points["quality_mean"] = quality_mean.ravel()
     points = points.to_crs("EPSG:3301")
     return points, coverage
+
+
+def assign_radar_to_eraldis(
+    eraldis_gdf: "gpd.GeoDataFrame",
+    radar_points: "gpd.GeoDataFrame",
+    columns: tuple[str, ...],
+) -> "pd.DataFrame":
+    """For each eraldis stand, averages `columns` over every radar pixel whose point
+    the stand's bounding box actually contains — a direct coordinate-range lookup, NOT
+    gpd.sjoin/sjoin_nearest, so an unbounded-distance match (the original bug this
+    project migrated off KAIA to fix) is structurally impossible here. A pixel with a
+    NaN value for a column (zero valid observations in that pixel's window) is excluded
+    from the mean, never averaged in as if it were a real value. A stand with zero
+    valid pixels intersecting its own bounding box gets None for every column — never a
+    value borrowed from outside the stand's own footprint, at any distance."""
+    import pandas as pd
+
+    if radar_points.empty:
+        return pd.DataFrame(
+            {col: [None] * len(eraldis_gdf) for col in columns},
+            index=eraldis_gdf.index,
+        )
+
+    records = []
+    for geom in eraldis_gdf.geometry:
+        minx, miny, maxx, maxy = geom.bounds
+        candidates = radar_points.cx[minx:maxx, miny:maxy]
+        if candidates.empty:
+            # Bounding-box query found nothing at all — try the pixel the stand's
+            # own centroid falls in as a last direct lookup, in case the stand's
+            # bounds are smaller than one pixel and cx's slice missed it.
+            candidates = radar_points.cx[
+                geom.centroid.x : geom.centroid.x, geom.centroid.y : geom.centroid.y
+            ]
+        record = {}
+        for col in columns:
+            valid_values = candidates[col].dropna()
+            record[col] = float(valid_values.mean()) if len(valid_values) else None
+        records.append(record)
+
+    return pd.DataFrame(records, index=eraldis_gdf.index)

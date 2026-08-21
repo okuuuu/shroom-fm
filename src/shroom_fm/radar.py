@@ -1,77 +1,55 @@
 import concurrent.futures
 import os
-import requests
+import re
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from xml.etree import ElementTree
 
 import geopandas as gpd
 import h5py
 import numpy as np
 import pyproj
+import requests
 
-from shroom_fm.retry import get_with_retry, post_with_retry
-
-KAIA_QUERY_URL = "https://avaandmed.keskkonnaportaal.ee/api/lists/active/items/query"
-KAIA_DOWNLOAD_URL_TEMPLATE = (
-    "https://avaandmed.keskkonnaportaal.ee/api/lists/active/items/{id}/files/{file_id}"
-)
-RADAR_CONTENT_TYPE = "0102FB01"
-RADAR_PHENOMENON = "COMP"
+OPERA_S3_BASE_URL = "https://s3.waw3-1.cloudferro.com/"
+OPERA_S3_BUCKET = "openradar-24h"
 MAX_WORKERS = 3
-_PAGE_SIZE = 2000
-_DOWNLOAD_429_MAX_ATTEMPTS = 6
-_DOWNLOAD_429_INITIAL_BACKOFF = 5.0
+_S3_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 _HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
+_KEY_TIMESTAMP_RE = re.compile(r"@(\d{8}T\d{4})@0@RATE\.h5$")
 
 
-def query_radar_documents(since: datetime) -> list[dict]:
-    documents: list[dict] = []
-    bookmark = None
-    while True:
-        body = {
-            "filter": {
-                "and": {
-                    "children": [
-                        {"underContentType": {"contentType": RADAR_CONTENT_TYPE}},
-                        {"isEqual": {"field": "Phenomenon", "value": RADAR_PHENOMENON}},
-                        {
-                            "greaterThanOrEqual": {
-                                "field": "Timestamp",
-                                "value": since.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            }
-                        },
-                    ]
-                }
-            },
-            "pageSize": _PAGE_SIZE,
-            "includeFileMetadata": True,
-            "fields": ["Timestamp"],
-        }
-        if bookmark is not None:
-            body["bookmark"] = bookmark
-        response = post_with_retry(KAIA_QUERY_URL, json=body, timeout=30)
-        data = response.json()
-        for doc in data["documents"]:
-            documents.append(
-                {
-                    "id": doc["id"],
-                    "file_id": doc["fileMetadata"][0]["id"],
-                    "timestamp": datetime.fromisoformat(
-                        doc["metadata"]["Timestamp"]
-                    ).astimezone(timezone.utc),
-                }
-            )
-        next_bookmark = data.get("nextBookmark")
-        if not data["documents"] or next_bookmark is None or next_bookmark == bookmark:
-            break
-        bookmark = next_bookmark
-    return documents
+def list_recent_radar_objects(prefix_date: date) -> list[dict]:
+    """Lists real RATE.h5 objects for prefix_date from the confirmed-working public
+    anonymous S3 endpoint (no signing, no boto3). Returns [] — not an error — for a
+    date that has legitimately rolled off the 24h rolling cache (confirmed real S3
+    behavior: a valid, empty KeyCount=0 response, not an HTTP error)."""
+    prefix = f"{prefix_date:%Y/%m/%d}/OPERA/COMP/"
+    url = (
+        f"{OPERA_S3_BASE_URL}{OPERA_S3_BUCKET}/"
+        f"?list-type=2&prefix={prefix}&max-keys=1000"
+    )
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    root = ElementTree.fromstring(response.text)
+
+    objects = []
+    for content in root.findall("s3:Contents", _S3_NAMESPACE):
+        key = content.find("s3:Key", _S3_NAMESPACE).text
+        match = _KEY_TIMESTAMP_RE.search(key)
+        if match is None:
+            continue
+        timestamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M").replace(
+            tzinfo=timezone.utc
+        )
+        objects.append({"key": key, "timestamp": timestamp})
+    return objects
 
 
-def _cache_filename(document: dict) -> str:
-    return f"{document['timestamp']:%Y%m%dT%H%M%SZ}_{document['id']}.h5"
+def _opera_cache_filename(timestamp: datetime) -> str:
+    return f"{timestamp:%Y%m%dT%H%M%S}Z_RATE.h5"
 
 
 def cached_radar_timestamp(path: Path) -> datetime:
@@ -79,35 +57,23 @@ def cached_radar_timestamp(path: Path) -> datetime:
     return datetime.strptime(stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
 
 
-def download_radar_composite(
-    document: dict, cache_dir: Path, *, sleep=time.sleep
-) -> Path:
-    path = cache_dir / _cache_filename(document)
+def download_opera_object(key: str, cache_dir: Path) -> Path:
+    match = _KEY_TIMESTAMP_RE.search(key)
+    timestamp = datetime.strptime(match.group(1), "%Y%m%dT%H%M").replace(
+        tzinfo=timezone.utc
+    )
+    path = cache_dir / _opera_cache_filename(timestamp)
     if path.exists():
         return path
-    url = KAIA_DOWNLOAD_URL_TEMPLATE.format(
-        id=document["id"], file_id=document["file_id"]
-    )
 
-    backoff = _DOWNLOAD_429_INITIAL_BACKOFF
-    response = None
-    for attempt in range(_DOWNLOAD_429_MAX_ATTEMPTS):
-        try:
-            response = get_with_retry(url, timeout=30)
-            break
-        except requests.exceptions.HTTPError as exc:
-            is_rate_limited = (
-                exc.response is not None and exc.response.status_code == 429
-            )
-            if not is_rate_limited or attempt == _DOWNLOAD_429_MAX_ATTEMPTS - 1:
-                raise
-            sleep(backoff)
-            backoff *= 2
+    url = f"{OPERA_S3_BASE_URL}{OPERA_S3_BUCKET}/{key}"
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
 
     if not response.content.startswith(_HDF5_SIGNATURE):
         raise ValueError(
-            f"Downloaded content for document {document['id']} is not a valid HDF5 "
-            f"file (missing signature) — got {len(response.content)} bytes"
+            f"Downloaded content for {key} is not a valid HDF5 file "
+            f"(missing signature) — got {len(response.content)} bytes"
         )
 
     cache_dir.mkdir(parents=True, exist_ok=True)

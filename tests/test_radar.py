@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 
 import h5py
 import numpy as np
@@ -9,19 +9,141 @@ from shroom_fm.radar import (
     accumulate_rainfall,
     cached_radar_files,
     cached_radar_timestamp,
-    download_radar_composite,
     expire_old_radar_composites,
     fetch_new_radar_composites,
     newest_cached_radar_timestamp,
     parse_radar_composite,
-    query_radar_documents,
     radar_bbox_slice,
     radar_pixel_centers,
+)
+
+from shroom_fm.radar import (
+    OPERA_S3_BASE_URL,
+    OPERA_S3_BUCKET,
+    download_opera_object,
+    list_recent_radar_objects,
 )
 
 
 def _utc(*args):
     return datetime(*args, tzinfo=timezone.utc)
+
+
+def test_opera_s3_constants_match_confirmed_real_endpoint():
+    assert OPERA_S3_BASE_URL == "https://s3.waw3-1.cloudferro.com/"
+    assert OPERA_S3_BUCKET == "openradar-24h"
+
+
+def test_list_recent_radar_objects_parses_real_s3_listing_xml(monkeypatch):
+    # Real S3 ListObjectsV2 XML shape, confirmed live 2026-08-21 (trimmed to 2 RATE
+    # entries plus a non-RATE entry that must be filtered out).
+    fake_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Name>openradar-24h</Name>
+<Prefix>2026/08/21/OPERA/</Prefix>
+<IsTruncated>false</IsTruncated>
+<Contents>
+<Key>2026/08/21/OPERA/COMP/OPERA@20260821T0000@0@ACRR.h5</Key>
+<LastModified>2026-08-21T00:10:05.906Z</LastModified>
+</Contents>
+<Contents>
+<Key>2026/08/21/OPERA/COMP/OPERA@20260821T0000@0@RATE.h5</Key>
+<LastModified>2026-08-21T00:10:03.186Z</LastModified>
+</Contents>
+<Contents>
+<Key>2026/08/21/OPERA/COMP/OPERA@20260821T0015@0@RATE.h5</Key>
+<LastModified>2026-08-21T00:25:03.637Z</LastModified>
+</Contents>
+</ListBucketResult>"""
+
+    class _FakeResponse:
+        text = fake_xml
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.requests.get", lambda url, timeout: _FakeResponse()
+    )
+
+    objects = list_recent_radar_objects(_date(2026, 8, 21))
+
+    assert len(objects) == 2  # ACRR excluded, only RATE kept
+    assert objects[0]["key"] == "2026/08/21/OPERA/COMP/OPERA@20260821T0000@0@RATE.h5"
+    assert objects[0]["timestamp"] == _utc(2026, 8, 21, 0, 0)
+    assert objects[1]["timestamp"] == _utc(2026, 8, 21, 0, 15)
+
+
+def test_list_recent_radar_objects_returns_empty_for_rolled_off_date(monkeypatch):
+    # Real confirmed S3 behavior for a date outside the 24h rolling window: valid XML,
+    # KeyCount=0 — must return [], not raise.
+    fake_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Name>openradar-24h</Name>
+<Prefix>2026/08/19/OPERA/</Prefix>
+<IsTruncated>false</IsTruncated>
+<KeyCount>0</KeyCount>
+</ListBucketResult>"""
+
+    class _FakeResponse:
+        text = fake_xml
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.requests.get", lambda url, timeout: _FakeResponse()
+    )
+
+    objects = list_recent_radar_objects(_date(2026, 8, 19))
+
+    assert objects == []
+
+
+def test_download_opera_object_writes_cache_file_from_real_filename(tmp_path, monkeypatch):
+    class _FakeResponse:
+        content = b"\x89HDF\r\n\x1a\n" + b"bytes"
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        "shroom_fm.radar.requests.get", lambda url, timeout: _FakeResponse()
+    )
+
+    cache_dir = tmp_path / "radar_cache"
+    result = download_opera_object(
+        "2026/08/21/OPERA/COMP/OPERA@20260821T0015@0@RATE.h5", cache_dir
+    )
+
+    assert result.exists()
+    assert cached_radar_timestamp(result) == _utc(2026, 8, 21, 0, 15)
+
+
+def test_download_opera_object_skips_if_already_cached(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+
+    calls = []
+
+    def _fake_get(url, timeout):
+        calls.append(url)
+        raise AssertionError("should not be called — file already cached")
+
+    # Pre-create the expected cache file using the real naming convention
+    expected_path = cache_dir / "20260821T001500Z_RATE.h5"
+    expected_path.write_bytes(b"\x89HDF\r\n\x1a\n" + b"already here")
+
+    monkeypatch.setattr("shroom_fm.radar.requests.get", _fake_get)
+
+    result = download_opera_object(
+        "2026/08/21/OPERA/COMP/OPERA@20260821T0015@0@RATE.h5", cache_dir
+    )
+
+    assert result == expected_path
+    assert calls == []
 
 
 def test_query_radar_documents_paginates_via_bookmark(monkeypatch):

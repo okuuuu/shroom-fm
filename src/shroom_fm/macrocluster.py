@@ -9,7 +9,7 @@ from scipy.spatial.distance import pdist
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS, WGS84_CRS
 from shroom_fm.forest_block import MACROCLUSTER_TARGET_EXTENT_M, geometry_extent_m
 from shroom_fm.habitat import TARGET_SPECIES
-from shroom_fm.scout import weather_coverage_ratio
+from shroom_fm.scout import MIN_SCOUT_WEATHER_COVERAGE, weather_coverage_ratio
 
 BLOCK_NEIGHBOR_PROXY_M = 8_000
 
@@ -246,14 +246,13 @@ def rollup_daily_state(
 ) -> gpd.GeoDataFrame:
     eraldis_to_macrocluster = dict(zip(eraldis_gdf["id"], eraldis_gdf["macrocluster_id"]))
 
-    # Assign every candidate and every scored ecotone to a macrocluster, counting
-    # cross-cluster anomalies as we go (diagnostic, never a hard failure).
-    candidate_cluster_ids = []
-    for id_a, id_b in zip(scout_candidates_gdf["id_a"], scout_candidates_gdf["id_b"]):
-        cluster_id, _ = ecotone_macrocluster_id(id_a, id_b, eraldis_to_macrocluster)
-        candidate_cluster_ids.append(cluster_id)
+    # scout_candidates_gdf already carries its own real macrocluster_id per row
+    # (attached at export time by export_scout_candidates.py's attach_macrocluster_id
+    # call) -- no need to re-derive it here via ecotone_macrocluster_id, unlike
+    # joined_gdf below, which still needs it (joined_gdf is the raw ecotone x access x
+    # fruiting frame, computed independently in this script, never run through
+    # attach_macrocluster_id).
     candidates = scout_candidates_gdf.copy()
-    candidates["macrocluster_id"] = candidate_cluster_ids
 
     joined_cluster_ids = []
     cross_flags = []
@@ -313,9 +312,12 @@ def rollup_daily_state(
             )
             if eligible_pool_size == 0:
                 record[f"today_weather_coverage_{species}"] = None
+                record[f"today_weather_status_{species}"] = None
             else:
-                record[f"today_weather_coverage_{species}"] = weather_coverage_ratio(
-                    cluster_joined, species
+                coverage = weather_coverage_ratio(cluster_joined, species)
+                record[f"today_weather_coverage_{species}"] = coverage
+                record[f"today_weather_status_{species}"] = (
+                    "ok" if coverage >= MIN_SCOUT_WEATHER_COVERAGE else "insufficient_coverage"
                 )
 
         records.append(record)

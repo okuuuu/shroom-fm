@@ -392,6 +392,7 @@ def test_rollup_daily_state_computes_ranked_stats_for_a_populated_cluster():
             "scout_score": [0.9, 0.7, 0.5],
             "id_a": [1, 3, 5],
             "id_b": [2, 4, 6],
+            "macrocluster_id": [10, 10, 10],
         },
         geometry=[Point(0, 0)] * 3,
         crs="EPSG:4326",
@@ -438,6 +439,7 @@ def test_rollup_daily_state_top3_mean_with_fewer_than_three_candidates():
             "scout_score": [0.6],
             "id_a": [1],
             "id_b": [2],
+            "macrocluster_id": [10],
         },
         geometry=[Point(0, 0)],
         crs="EPSG:4326",
@@ -473,7 +475,10 @@ def test_rollup_daily_state_cluster_with_zero_candidates_gets_none_not_zero():
     from shapely.geometry import Point
 
     scout_candidates_gdf = gpd.GeoDataFrame(
-        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
         geometry=[],
         crs="EPSG:4326",
     )
@@ -516,7 +521,10 @@ def test_rollup_daily_state_weather_coverage_is_none_for_empty_eligible_pool():
     from shapely.geometry import Point
 
     scout_candidates_gdf = gpd.GeoDataFrame(
-        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
         geometry=[],
         crs="EPSG:4326",
     )
@@ -554,7 +562,10 @@ def test_rollup_daily_state_weather_coverage_is_none_when_no_ecotones_in_cluster
     from shapely.geometry import Point
 
     scout_candidates_gdf = gpd.GeoDataFrame(
-        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
         geometry=[],
         crs="EPSG:4326",
     )
@@ -587,7 +598,10 @@ def test_rollup_daily_state_counts_cross_macrocluster_ecotones():
     from shapely.geometry import Point
 
     scout_candidates_gdf = gpd.GeoDataFrame(
-        {"species": [], "tier": [], "scout_score": [], "id_a": [], "id_b": []},
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
         geometry=[],
         crs="EPSG:4326",
     )
@@ -617,3 +631,115 @@ def test_rollup_daily_state_counts_cross_macrocluster_ecotones():
     row_20 = result[result["macrocluster_id"] == 20].iloc[0]
     assert row_10["cross_macrocluster_ecotone_count"] == 1
     assert row_20["cross_macrocluster_ecotone_count"] == 0
+
+
+def test_rollup_daily_state_weather_status_is_ok_when_coverage_meets_threshold():
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [10, 10]},
+        geometry=[Point(0, 0)] * 2,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1],
+            "id_b": [2],
+            **_joined_columns(1, [1.0], [True], [0.6]),
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_weather_coverage_chanterelle"] == pytest.approx(1.0)
+    assert row["today_weather_status_chanterelle"] == "ok"
+
+
+def test_rollup_daily_state_weather_status_is_insufficient_coverage_below_threshold():
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2, 3, 4], "macrocluster_id": [10, 10, 10, 10]},
+        geometry=[Point(0, 0)] * 4,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    # 4 eligible rows, only 1 has real fruiting data -> coverage 0.25, well below
+    # MIN_SCOUT_WEATHER_COVERAGE (0.90).
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1, 2, 3, 4],
+            "id_b": [1, 2, 3, 4],
+            **_joined_columns(
+                4, [1.0, 1.0, 1.0, 1.0], [True, True, True, True], [0.6, None, None, None]
+            ),
+        },
+        geometry=[Point(0, 0)] * 4,
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_weather_coverage_chanterelle"] == pytest.approx(0.25)
+    assert row["today_weather_status_chanterelle"] == "insufficient_coverage"
+
+
+def test_rollup_daily_state_weather_status_is_none_for_empty_eligible_pool():
+    scout_candidates_gdf = gpd.GeoDataFrame(
+        {
+            "species": [], "tier": [], "scout_score": [],
+            "id_a": [], "id_b": [], "macrocluster_id": [],
+        },
+        geometry=[],
+        crs="EPSG:4326",
+    )
+    eraldis_gdf = gpd.GeoDataFrame(
+        {"id": [1, 2], "macrocluster_id": [10, 10]},
+        geometry=[Point(0, 0)] * 2,
+        crs="EPSG:4326",
+    )
+    macroclusters_gdf = gpd.GeoDataFrame(
+        {"macrocluster_id": [10]}, geometry=[Point(0, 0)], crs="EPSG:4326"
+    )
+    joined_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": [1],
+            "id_b": [2],
+            **_joined_columns(1, [1.0], [False], [0.6]),
+        },
+        geometry=[Point(0, 0)],
+        crs="EPSG:4326",
+    )
+
+    result = rollup_daily_state(
+        scout_candidates_gdf, joined_gdf, eraldis_gdf, macroclusters_gdf, _utc(2026, 8, 20)
+    )
+
+    row = result[result["macrocluster_id"] == 10].iloc[0]
+    assert row["today_weather_coverage_chanterelle"] is None
+    assert row["today_weather_status_chanterelle"] is None

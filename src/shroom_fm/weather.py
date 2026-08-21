@@ -6,7 +6,11 @@ import pandas as pd
 
 from shroom_fm.eraldis import ESTONIAN_GRID_CRS
 from shroom_fm.meps import accumulate_meps_features
-from shroom_fm.radar import accumulate_rainfall
+from shroom_fm.radar import (
+    _validate_coverage,
+    accumulate_rainfall,
+    assign_radar_to_eraldis,
+)
 
 MIN_RADAR_COVERAGE = 0.7
 MAX_MEPS_STALENESS_HOURS = 6
@@ -23,6 +27,9 @@ _RADAR_COLUMNS = (
     "last_significant_event_mm",
     "last_strong_event_mm",
     "max_24h_rain_14d",
+    "coverage_3d",
+    "coverage_7d",
+    "coverage_14d",
 )
 _MEPS_COLUMNS = (
     "temp_mean_3d",
@@ -101,32 +108,55 @@ def refresh_weather(
     crs = eraldis_gdf.crs
     bounds = tuple(eraldis_gdf.to_crs("EPSG:4326").total_bounds)
 
-    radar_points, radar_coverage = accumulate_rainfall(radar_cache_dir, now, bounds)
+    radar_points, radar_coverage_national = accumulate_rainfall(radar_cache_dir, now, bounds)
     meps_points, meps_coverage, meps_newest_hour = accumulate_meps_features(now, bounds)
 
     eraldis_projected = eraldis_gdf.to_crs(ESTONIAN_GRID_CRS)
-    radar_joined = _nearest_join(eraldis_projected, radar_points, _RADAR_COLUMNS)
+    radar_joined = assign_radar_to_eraldis(eraldis_projected, radar_points, _RADAR_COLUMNS)
     meps_joined = _nearest_join(eraldis_projected, meps_points, _MEPS_COLUMNS)
 
     result = eraldis_gdf.copy()
-    quality = weather_data_quality(radar_coverage, meps_coverage, meps_newest_hour, now)
 
-    radar_degraded_3d = radar_coverage["3d"] < MIN_RADAR_COVERAGE
-    radar_degraded_7d = radar_coverage["7d"] < MIN_RADAR_COVERAGE
-    radar_degraded_14d = radar_coverage["14d"] < MIN_RADAR_COVERAGE
+    # Per-stand coverage — each stand's own joined coverage_Nd value, run through the
+    # same 0<=coverage<=1 invariant used everywhere else. A stand with zero valid
+    # radar pixels intersecting it (assign_radar_to_eraldis returns None for
+    # coverage_Nd in that case) is treated as coverage 0.0 for degradation purposes —
+    # genuinely uncovered, not an unknown to be silently skipped.
+    def _stand_coverage(value) -> float:
+        return _validate_coverage(0.0 if pd.isna(value) else float(value), label="stand")
+
+    radar_degraded_3d = [
+        _stand_coverage(v) < MIN_RADAR_COVERAGE for v in radar_joined["coverage_3d"]
+    ]
+    radar_degraded_7d = [
+        _stand_coverage(v) < MIN_RADAR_COVERAGE for v in radar_joined["coverage_7d"]
+    ]
+    radar_degraded_14d = [
+        _stand_coverage(v) < MIN_RADAR_COVERAGE for v in radar_joined["coverage_14d"]
+    ]
     meps_degraded = (
         _is_meps_stale(meps_newest_hour, now) or meps_coverage < MIN_MEPS_COVERAGE
     )
 
-    result["rain_3d_mm"] = _null_if_degraded(radar_joined["rain_3d_mm"], radar_degraded_3d)
-    result["wet_hours_72h"] = _null_if_degraded(
+    def _null_if_degraded_per_stand(values, degraded_flags) -> list:
+        return [
+            None if degraded or pd.isna(v) else v
+            for v, degraded in zip(values, degraded_flags)
+        ]
+
+    result["rain_3d_mm"] = _null_if_degraded_per_stand(
+        radar_joined["rain_3d_mm"], radar_degraded_3d
+    )
+    result["wet_hours_72h"] = _null_if_degraded_per_stand(
         radar_joined["wet_hours_72h"], radar_degraded_3d
     )
-    result["rain_7d_mm"] = _null_if_degraded(radar_joined["rain_7d_mm"], radar_degraded_7d)
-    result["rain_14d_mm"] = _null_if_degraded(
+    result["rain_7d_mm"] = _null_if_degraded_per_stand(
+        radar_joined["rain_7d_mm"], radar_degraded_7d
+    )
+    result["rain_14d_mm"] = _null_if_degraded_per_stand(
         radar_joined["rain_14d_mm"], radar_degraded_14d
     )
-    result["hours_since_any_rain"] = _null_if_degraded(
+    result["hours_since_any_rain"] = _null_if_degraded_per_stand(
         radar_joined["hours_since_any_rain"], radar_degraded_14d
     )
     for col in (
@@ -136,24 +166,47 @@ def refresh_weather(
         "last_strong_event_mm",
         "max_24h_rain_14d",
     ):
-        result[col] = _null_if_degraded(radar_joined[col], radar_degraded_14d)
+        result[col] = _null_if_degraded_per_stand(radar_joined[col], radar_degraded_14d)
 
     result["rain_0_3d_mm"] = [
-        None if radar_degraded_3d or pd.isna(v) else v for v in radar_joined["rain_3d_mm"]
+        None if degraded or pd.isna(v) else v
+        for v, degraded in zip(radar_joined["rain_3d_mm"], radar_degraded_3d)
     ]
     result["rain_3_7d_mm"] = [
-        _bin_difference(v7, v3, radar_degraded_7d, radar_degraded_3d)
-        for v7, v3 in zip(radar_joined["rain_7d_mm"], radar_joined["rain_3d_mm"])
+        _bin_difference(v7, v3, degraded_7d, degraded_3d)
+        for v7, v3, degraded_7d, degraded_3d in zip(
+            radar_joined["rain_7d_mm"],
+            radar_joined["rain_3d_mm"],
+            radar_degraded_7d,
+            radar_degraded_3d,
+        )
     ]
     result["rain_7_14d_mm"] = [
-        _bin_difference(v14, v7, radar_degraded_14d, radar_degraded_7d)
-        for v14, v7 in zip(radar_joined["rain_14d_mm"], radar_joined["rain_7d_mm"])
+        _bin_difference(v14, v7, degraded_14d, degraded_7d)
+        for v14, v7, degraded_14d, degraded_7d in zip(
+            radar_joined["rain_14d_mm"],
+            radar_joined["rain_7d_mm"],
+            radar_degraded_14d,
+            radar_degraded_7d,
+        )
     ]
     for col in _MEPS_COLUMNS:
         result[col] = _null_if_degraded(meps_joined[col], meps_degraded)
 
     result["as_of"] = now
-    result["weather_data_coverage"] = radar_coverage["14d"]
-    result["weather_data_quality"] = quality
+    result["weather_data_coverage"] = [
+        _stand_coverage(v) for v in radar_joined["coverage_14d"]
+    ]
+    result["weather_data_quality"] = [
+        weather_data_quality(
+            {"3d": _stand_coverage(c3), "7d": _stand_coverage(c7), "14d": _stand_coverage(c14)},
+            meps_coverage,
+            meps_newest_hour,
+            now,
+        )
+        for c3, c7, c14 in zip(
+            radar_joined["coverage_3d"], radar_joined["coverage_7d"], radar_joined["coverage_14d"]
+        )
+    ]
 
     return gpd.GeoDataFrame(result, geometry="geometry", crs=crs)

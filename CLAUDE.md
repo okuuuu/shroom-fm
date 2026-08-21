@@ -68,11 +68,17 @@ since none of `join_ecotone_access`/`join_ecotone_fruiting`/`rollup_daily_state`
 geometry or need more than a handful of columns from each; the script now completes in
 **2m12s real time against real data, producing 22 macrocluster states with 0
 cross-macrocluster ecotones**; see "Macroclustering" below for the full fix and real-scale
-verification. Still deferred: personal observation history and a
-landscape-mosaic diversity bonus — neither exists yet, and `ScoutScore` v1 simply omits
-them from its formula rather than faking neutral placeholder values for them. This file
-documents the target architecture so implementation stays consistent; update it as more of
-the pipeline lands.
+verification. The standalone weather-refresh pipeline's radar source has since been
+migrated from KAIA to EUMETNET's pan-European OPERA composite (2026-08-21), fixing the
+unbounded-nearest-join bug and the `coverage > 1.0` invariant violation at their root
+along the way, plus two further real bugs found only via a live backfill against the
+real OPERA S3 buckets and the full 262,054-stand dataset (a wrong HDF5 group path for
+gain/offset decoding, and a small-stand-vs-2km-pixel radar assignment gap) — see
+"Weather refresh" below for the full migration and real-scale verification. Still
+deferred: personal observation history and a landscape-mosaic diversity bonus — neither
+exists yet, and `ScoutScore` v1 simply omits them from its formula rather than faking
+neutral placeholder values for them. This file documents the target architecture so
+implementation stays consistent; update it as more of the pipeline lands.
 
 ## Running the full pipeline
 
@@ -192,13 +198,13 @@ data, not visible from synthetic test fixtures):
 
 ## Weather refresh (standalone, not part of the 9-step pipeline)
 
-`uv run python scripts/refresh_weather.py` ingests KAIA radar precipitation composites
-(5-minute HDF5/ODIM files, rolling 14-day cache in `data/radar_cache/`) and MET Norway's
-MEPS/MET-Nordic hourly analysis grid (rolling 3-day window, no local cache — refetched
-each run) to produce `data/weather_eraldis.geojson`: per-`eraldis` `rain_3d_mm`/
-`rain_7d_mm`/`rain_14d_mm`, the non-overlapping `rain_0_3d_mm`/`rain_3_7d_mm`/
-`rain_7_14d_mm` bins derived from those rolling sums, `hours_since_any_rain` (renamed
-from `hours_since_rain`), `hours_since_significant_rain`/`hours_since_strong_rain` and
+`uv run python scripts/refresh_weather.py` ingests EUMETNET **OPERA** pan-European radar
+precipitation composites (15-minute HDF5/ODIM `RATE` files, rolling 14-day cache in
+`data/radar_cache/`) and MET Norway's MEPS/MET-Nordic hourly analysis grid (rolling 3-day
+window, no local cache — refetched each run) to produce `data/weather_eraldis.geojson`:
+per-`eraldis` `rain_3d_mm`/`rain_7d_mm`/`rain_14d_mm`, the non-overlapping
+`rain_0_3d_mm`/`rain_3_7d_mm`/`rain_7_14d_mm` bins derived from those rolling sums,
+`hours_since_any_rain`, `hours_since_significant_rain`/`hours_since_strong_rain` and
 `last_significant_event_mm`/`last_strong_event_mm` (event-based, ≥5mm/≥10mm cumulative
 rain events with a 6-hour dry-gap boundary), `max_24h_rain_14d` (rolling 24-hour-max, not
 the flat 14-day total), `wet_hours_72h`, `temp_mean_3d`/`temp_night_mean_3d`,
@@ -209,68 +215,118 @@ meant to be re-run on demand (e.g. before a scouting trip), not as part of `main
 and wiring into `ScoutScore`) is now real — see "FruitingScore (weather-driven scoring)"
 below.
 
-**Real first-ever (cold-start) run, verified live against production KAIA/MET Norway
-servers on 2026-08-18:** a warm/mostly-populated-cache invocation of
-`scripts/refresh_weather.py` itself completes in 3-4 minutes (measured: 3m24s and 4m4s
-across two runs) and produces `data/weather_eraldis.geojson` with all 262,054 real
-`eraldis` stands scored, `weather_data_quality: {'complete': 262054}`. But getting the
-`data/radar_cache/` warm enough to reach that "complete" label for a brand-new deployment
-took **well over 30 minutes of real wall-clock time** — likely multiple hours in the worst
-case — not because of the per-file bbox-slicing (which works as designed and keeps each
-file's own processing cheap), but because KAIA's document-query and file-download
-endpoints both enforce a real, fairly aggressive rate limit (repeated live `HTTP 429 Too
-Many Requests`) once a client requests on the order of ~2000+ documents/files in a short
-burst. Two real bugs surfaced and were fixed live during this verification (both already
-committed, not introduced by this step): (1) the real KAIA API never returns
-`nextBookmark: null` to signal pagination end — it echoes the same non-null bookmark
-forever with an empty `documents` list once exhausted, contradicting the null-bookmark
-termination Task 1 originally shipped and regression-tested against a synthetic mock; (2)
-`download_radar_composite` now retries `HTTP 429` locally with exponential backoff (the
-shared `retry.py` deliberately excludes 4xx by design) and `MAX_WORKERS` was reduced from
-6 to 3 to reduce how often the limit is hit in the first place. Even with both fixes, a
-genuinely cold cache (this environment's very first run, starting from zero cached files)
-needed several separate `fetch_new_radar_composites` passes and manual pauses across
-multiple hours of real elapsed time to climb from 0 to ~3,420 of the ~4,110 documents in
-the 14-day window (84.5% overall raw coverage) before a run's `weather_data_coverage`
-(currently 0.849) cleared the `MIN_RADAR_COVERAGE = 0.7` threshold used for the `quality`
-label.
+**Radar source migration (2026-08-21): KAIA replaced with EUMETNET OPERA.** The project
+originally ingested KAIA (Estonian Environment Agency) radar composites; these have been
+fully replaced by EUMETNET's pan-European OPERA composite, accessed via two anonymous,
+no-API-key S3 buckets at `https://s3.waw3-1.cloudferro.com/`: `openradar-24h` (rolling
+~24h window) for recent dates, and `openradar-archive` (confirmed live reaching back to
+at least 2020-01-15 — far beyond this project's 14-day need) for older dates within the
+window — both under key format
+`{bucket}/YYYY/MM/DD/OPERA/COMP/OPERA@YYYYMMDDTHHMM@0@RATE.h5`, both carrying identical
+data for any date they overlap, so the routing boundary between them isn't
+correctness-critical. Plain HTTPS GET + S3 XML listing only — no `boto3` dependency.
+Product `RATE` (instantaneous rain rate), real confirmed cadence **15 minutes** (not
+KAIA's 5-minute cadence). Real confirmed grid (from live-downloaded files):
+`xsize=1900`, `ysize=2200`, `xscale=yscale=2000.0` (2km, coarser than KAIA's grid),
+`projdef = "+proj=laea +lat_0=55.0 +lon_0=10.0 +x_0=1950000.0 +y_0=-2100000.0 +units=m
++ellps=WGS84"` (Lambert Azimuthal Equal-Area, not KAIA's Mercator — read dynamically per
+file, same as before, so this required no code change on its own), UL corner
+`lon=-39.5357864125034, lat=67.0228327624372`, `Conventions: ODIM_H5/V2_4` (same standard
+as KAIA). Real confirmed value-decode semantics: gain/offset/nodata/undetect live at
+`dataset1/data1/what` (`gain=1.0`, `offset=0.0`, `nodata=-9999000.0`,
+`undetect=-8888000.0`, `quantity='RATE'`) — **not** `dataset1/what`, which holds only
+dataset-level metadata (`startdate`/`enddate`/`product`/`prodname`) with no decode attrs
+at all; this distinction is the exact root cause of a real bug found during this task's
+live backfill, see below. Optional quality layer at `dataset1/data1/quality1/data`,
+decoded range `[0.0, 1.0]`, own `gain`/`offset` at `dataset1/data1/quality1/what`.
 
-**Known real-data quirk found via this live verification, not caught by unit tests:**
-even at 84.5% *overall* 14-day coverage, the *most recent* 1-3 days remained far sparser
-(12-20%) than the aggregate figure suggests, because KAIA returns documents in
-chronological order and a rate-limited, worker-pool-bounded download loop naturally
-finishes older (earlier-submitted) files before newer ones — so recency lags overall
-completeness during a cold backfill. In this run's real output, `rain_3d_mm` and
-`rain_7d_mm` came back as **exactly 0.0 for all 262,054 stands** (zero variance) while
-`rain_14d_mm` (drawing on the better-sampled older two-thirds of the window) was nonzero
-for ~3.5% of stands (up to 3.24mm). `temp_mean_3d`/`temp_night_mean_3d` (15-17°C) and
-`rh_mean_3d`/`rh_night_mean_3d` (70-85%) both looked physically plausible and varied
-normally across stands — only the *rain* features were affected, since they alone depend
-on the most-recent, most rate-limited portion of the radar window. This uniform-zero rain
-result is honestly ambiguous: it may reflect a genuine short dry spell in this specific
-2026-08 window, or it may still be an artifact of incomplete recent-day radar sampling —
-the current data does not let us tell these apart with confidence, and this should be
-re-checked once a routine (non-cold-start) run has a fully warm cache. `weather_data_quality`
-does not currently distinguish "overall coverage is fine but recency is poor" from true
-completeness — a possible future follow-up would be a separate recency-specific coverage
-check (e.g. over just the trailing 3-day window) rather than relying solely on the
-14-day-aggregate `MIN_RADAR_COVERAGE` threshold.
+The migration also fixed two real, previously-shipped bugs at their root, independent of
+the source swap itself: (1) the **unbounded-nearest-join bug** — the old KAIA-era
+`_nearest_join` (`gpd.sjoin_nearest`, unbounded distance) could silently assign a stand
+40-60km outside the radar grid a fabricated near-zero value borrowed from a distant
+pixel; radar assignment is now `assign_radar_to_eraldis`, a bounded coordinate-range
+lookup (see the real-scale finding below for why this needed a second real-data-driven
+fix of its own) that returns `None`, never a borrowed value, for a stand genuinely
+outside the grid — regression-tested directly. (2) The **`coverage > 1.0` invariant
+bug** — root cause proven exactly: `cached_radar_files`'s window filter was inclusive on
+both ends (`window_start <= ts <= window_end`), and a real production cache had exactly
+4050 files against an `expected_slots_14d` of exactly 4032
+(`4050/4032 = 1.0044642857142858`, bit-for-bit the value once actually shipped) — fixed
+to genuine half-open `[window_start, now)` semantics, with a hard `_validate_coverage`
+assertion (`0.0 <= coverage <= 1.0`) now enforced rather than silently accepted.
+Coverage/quality (`weather_data_coverage`/`weather_data_quality`/all three
+`radar_degraded_*` flags) is also now computed **per stand** from that stand's own
+joined `coverage_3d`/`coverage_7d`/`coverage_14d`, not from one repeated
+dataset-wide/"national" scalar shared by every stand regardless of location —
+`MIN_RADAR_COVERAGE = 0.7` unchanged.
 
-**Resolved by a later, fully-warm run (2026-08-19/20, verified live during FruitingScore's
-Task 7):** a routine (non-cold-start) `refresh_weather.py` run reached
-`weather_data_quality: {'complete': 262054}` with `weather_data_coverage` slightly over 1.0
-(1.0074 — the same harmless KAIA-publish-cadence-faster-than-nominal artifact noted
-elsewhere) — genuinely full coverage, not the earlier run's 84.5%. `rain_3d_mm`/
-`rain_7d_mm` (and the newer `rain_0_3d_mm`/`rain_3_7d_mm`) were still ~0 for effectively
-all 262,054 stands (max `rain_14d_mm`/`max_24h_rain_14d` across the entire annulus was
-0.0086mm), and `hours_since_significant_rain`/`hours_since_strong_rain` were `NaN` (never
-triggered) for every stand. With full radar coverage this time, the earlier ambiguity is
-resolved: this is a real, extended dry spell in the covered region, not a cold-start
-recency-sampling artifact. `fruiting_score_*` for every species came back correspondingly
-tiny (max ~0.00016, mean ~1e-7) even though `fruiting_season_prior_*` was at its 1.0 peak
-and `fruiting_temperature_modifier` was a perfect 1.0 — `MoistureTrigger`'s near-zero value
-correctly suppressed the otherwise-ideal season/temperature conditions, which is the
-intended behavior of the multiplicative formula, not a bug.
+**Real backfill against the live production OPERA S3 buckets and the full real
+262,054-stand `data/eraldis.geojson`, verified 2026-08-21 (Task 9):** the first live
+attempt crashed outright with `KeyError: 'gain'` inside `parse_radar_composite` after
+successfully downloading 1,343 real files (0 network failures) — **100% of real
+downloaded files failed to parse.** Root cause, confirmed by directly inspecting the
+actual HDF5 group structure of 3+ live-downloaded `openradar-archive` files (not
+guessed): `parse_radar_composite` was reading `gain`/`offset`/`nodata`/`undetect` from
+`dataset1/what`, which real OPERA files simply don't populate with those attrs (see the
+value-decode semantics above) — a real, previously-unshipped production bug that no unit
+test caught, because the test fixture (`_write_fake_composite`) had been written with
+the exact same wrong group path, so tests passed self-consistently against a fixture
+that never matched real file structure. Fixed (one line in `radar.py`, plus the fixture
+corrected to write both `dataset1/what` and `dataset1/data1/what` matching real files —
+commit `da24574`).
+
+After that fix, a full re-run **completed** (11m39s) but surfaced a **second** real bug:
+`weather_data_quality` came back `{'partial_radar_gap_3d;partial_radar_gap_7d;partial_radar_gap_14d':
+260189, 'complete': 1865}` — only 0.7% of stands "complete" — despite the 14-day radar
+file window itself being 99.85% complete (1343/1344 expected slots) with zero observed
+per-file spatial gaps over Estonia. Root cause, confirmed directly: `assign_radar_to_eraldis`'s
+per-stand pixel lookup queried each stand's own bounding box for radar pixel-center
+points it directly contained, falling back to a zero-width-slice centroid query that
+essentially never matched anything exactly — but real eraldis stands are typically only
+~100-300m across, far smaller than OPERA's 2km pixel spacing, so a stand's own tiny bbox
+essentially never itself contains one of the fixed, regularly-spaced grid points. The
+observed 0.7% "complete" rate matches almost exactly the geometric probability of that
+coincidence for a small, effectively-randomly-positioned stand. Fixed with a bounded
+fallback (commit `da24574`): only when the direct bbox query is empty, fall back to the
+single nearest radar point within a fixed 1,500m radius of the stand's centroid (just
+over half the diagonal of one real ~2km pixel, so it can only ever reach the stand's own
+true containing pixel, never a neighboring one) — implemented via direct
+`.distance()` computation on a small pre-filtered candidate set, deliberately **not**
+`gpd.sjoin_nearest`, keeping the "no sjoin_nearest for radar data, ever, at any
+distance" design constraint intact; a stand genuinely outside the grid (the original
+unbounded-nearest-join regression test) still correctly gets `None`.
+
+**Final, fully-successful real backfill (both fixes applied):** `time uv run python
+scripts/refresh_weather.py` completed in **real 14m3.765s** (`user 12m37.045s`, `sys
+0m10.162s`), `1343 new radar composites downloaded`, `262054 eraldis stands
+weather-scored`, printing `quality breakdown: {'complete': 262054}` — **every single
+real stand "complete," not just most.** The brief's exact spot-check
+(`w['weather_data_coverage']`) against the real `data/weather_eraldis.geojson`:
+`any coverage > 1.0` is **`False`** — the direct, real-data proof the invariant bug is
+fixed. `weather_data_coverage`'s distribution: mean/median/min/max all ≈ **0.999256**
+(`std` ~1e-16 — numerically identical across all 262,054 real stands). This is honestly
+a real, understood, non-bug finding rather than the visibly-varying-by-stand result
+naively expected going in: `weather_data_coverage` is computed per-stand from each
+stand's own joined `coverage_14d` (confirmed by reading `weather.py` directly — no
+repeated national/dataset-wide scalar is involved anywhere in the computation), but in
+this specific real run every one of the 1,343 real downloaded files had exactly 0% `NaN`
+across the *entire* Estonia sub-grid (spot-checked directly against several individual
+real files spanning the full 14-day range, both from `openradar-24h` and
+`openradar-archive`) — so every pixel's own `valid_slots_14d` counter converged to the
+identical value (1343), giving the identical `coverage_14d = 1343/1344 = 0.999256...`
+everywhere. The per-stand *mechanism* is real and architecturally distinct from the old
+shared-scalar bug (traced through the code, not assumed); this run's real-world OPERA
+data over Estonia just happened to be spatially uniform enough this week that per-stand
+values don't visibly diverge from each other. A future run against a genuinely
+spatially-patchy cache (rather than this run's near-total temporal+spatial completeness)
+would be expected to show real per-stand variance; this run's near-perfect completeness
+didn't exercise that case. Unlike `weather_data_coverage`, the rain features themselves
+show real per-stand spatial variance this run — confirmed directly:
+`rain_14d_mm` mean 24.80mm (std 8.72, range 7.59-79.59mm), `rain_3d_mm` mean 6.91mm (std
+4.56, range 0.55-37.76mm), `max_24h_rain_14d` mean 13.92mm (std 6.40, range
+4.23-63.79mm) — real, current, spatially-varying rainfall (this OPERA verification
+happened outside the extended dry spell documented under FruitingScore below, which was
+observed during the prior KAIA-era runs).
 
 ## FruitingScore (weather-driven scoring)
 

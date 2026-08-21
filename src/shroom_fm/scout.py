@@ -142,9 +142,11 @@ def scout_score(
     return ecotone_score * access_modifier * fruiting_modifier
 
 
-def scout_candidates_for_species(
-    joined_gdf: gpd.GeoDataFrame, species: str, top_n: int
-) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+def _compute_scored(joined_gdf: gpd.GeoDataFrame, species: str) -> gpd.GeoDataFrame:
+    """Shared first half of both remote_high_value_for_species and
+    scout_candidates_for_species_macrocluster: filters to ecologically-scored rows and
+    computes scout_score (None when access-ineligible or fruiting data missing —
+    unchanged formula, unchanged from the old scout_candidates_for_species)."""
     ecotone_col = f"ecotone_score_{species}"
     fruiting_col = f"fruiting_modifier_{species}"
     scored = joined_gdf[joined_gdf[ecotone_col].notna()].copy()
@@ -159,17 +161,25 @@ def scout_candidates_for_species(
             scored["scout_eligible"],
         )
     ]
+    return scored
+
+
+def remote_high_value_for_species(
+    joined_gdf: gpd.GeoDataFrame, species: str, top_n: int
+) -> gpd.GeoDataFrame:
+    """Global (not per-macrocluster) — ecologically-strong candidates the v1
+    access-distance proxy couldn't confirm eligible for, or that are missing fruiting
+    data, ranked by raw ecotone_score (scout_score is None for these by construction).
+    This is exactly the 'remote' half of the old scout_candidates_for_species,
+    unchanged behavior, split into its own function since its scope (global) now
+    differs from the ranked tier's (per-macrocluster)."""
 
     def _exclusion_reason(eligible, fruiting_value):
         if not eligible:
             return REMOTE_EXCLUSION_REASON
         return MISSING_FRUITING_DATA_REASON
 
-    ranked = (
-        scored[scored["scout_score"].notna()]
-        .sort_values("scout_score", ascending=False)
-        .head(top_n)
-    )
+    scored = _compute_scored(joined_gdf, species)
     excluded = scored[scored["scout_score"].isna()].copy()
     excluded["exclusion_reason"] = [
         _exclusion_reason(eligible, fruiting_value)
@@ -177,8 +187,57 @@ def scout_candidates_for_species(
             excluded["scout_eligible"], excluded["fruiting_score"]
         )
     ]
-    remote = excluded.sort_values("ecotone_score", ascending=False).head(top_n)
-    return ranked, remote
+    return excluded.sort_values("ecotone_score", ascending=False).head(top_n)
+
+
+def scout_candidates_for_species_macrocluster(
+    bucket_gdf: gpd.GeoDataFrame,
+    species: str,
+    top_n: int,
+    min_separation_m: float,
+    max_suppressed_examples: int,
+) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """bucket_gdf must already be filtered to one macrocluster (see
+    macrocluster.attach_macrocluster_id) and in a metric CRS (this project's
+    ESTONIAN_GRID_CRS — suppress_nearby_candidates needs real distances). Computes
+    scout_score per row (unchanged formula), sorts, applies spatial suppression, caps
+    at top_n. Only rows that already have a real scout_score enter suppression — an
+    access-ineligible or missing-fruiting-data candidate never suppresses a real one,
+    since scout_score() already returns None for those cases before this function ever
+    sees them as suppression candidates. Returns (ranked, capped_suppressed): ranked
+    carries new nearby_suppressed_count/nearby_best_suppressed_score columns (computed
+    from the FULL suppressed set attributable to each final ranked row, before the
+    max_suppressed_examples cap truncates what's returned in capped_suppressed)."""
+    scored = _compute_scored(bucket_gdf, species)
+    eligible = scored[scored["scout_score"].notna()].sort_values(
+        "scout_score", ascending=False
+    )
+    retained, suppressed = suppress_nearby_candidates(eligible, min_separation_m)
+
+    ranked = retained.head(top_n).copy()
+    ranked["own_id"] = [f"{a}_{b}" for a, b in zip(ranked["id_a"], ranked["id_b"])]
+
+    # Only suppressed rows attributed to a FINAL ranked target matter here — a
+    # candidate that was retained by suppress_nearby_candidates but didn't make the
+    # top_n cut (never exported at all) shouldn't drag its own suppressed neighbors
+    # into the output either.
+    relevant_suppressed = suppressed[suppressed["suppressed_by_id"].isin(ranked["own_id"])]
+
+    nearby_counts = relevant_suppressed.groupby("suppressed_by_id").size()
+    nearby_best = relevant_suppressed.groupby("suppressed_by_id")["scout_score"].max()
+    ranked["nearby_suppressed_count"] = (
+        ranked["own_id"].map(nearby_counts).fillna(0).astype(int)
+    )
+    ranked["nearby_best_suppressed_score"] = ranked["own_id"].map(nearby_best)
+    ranked = ranked.drop(columns=["own_id"])
+
+    capped_suppressed = (
+        relevant_suppressed.sort_values("scout_score", ascending=False)
+        .groupby("suppressed_by_id", group_keys=False)
+        .head(max_suppressed_examples)
+    )
+
+    return ranked, capped_suppressed
 
 
 def weather_coverage_ratio(joined_gdf: gpd.GeoDataFrame, species: str) -> float:

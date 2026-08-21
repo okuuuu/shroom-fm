@@ -365,7 +365,7 @@ def radar_pixel_centers(georef: dict) -> gpd.GeoDataFrame:
 
 
 _RADAR_WINDOW_DAYS = 14
-_RADAR_SLOT_MINUTES = 5
+_RADAR_SLOT_MINUTES = 15
 
 RAIN_EVENT_DRY_GAP_H = 6.0
 SIGNIFICANT_EVENT_MM = 5.0
@@ -377,6 +377,8 @@ def accumulate_rainfall(
     now: datetime,
     eraldis_bounds_wgs84: tuple[float, float, float, float],
 ) -> tuple[gpd.GeoDataFrame, dict[str, float]]:
+    from datetime import timedelta
+
     window_start = now - timedelta(days=_RADAR_WINDOW_DAYS)
     files = cached_radar_files(cache_dir, window_start, now)
 
@@ -404,6 +406,10 @@ def accumulate_rainfall(
                 "last_significant_event_mm": [],
                 "last_strong_event_mm": [],
                 "max_24h_rain_14d": [],
+                "coverage_3d": [],
+                "coverage_7d": [],
+                "coverage_14d": [],
+                "quality_mean": [],
             },
             geometry=[],
             crs="EPSG:3301",
@@ -424,12 +430,26 @@ def accumulate_rainfall(
     last_wet_epoch = np.full(shape, -np.inf)
     wet_slots_72h = np.zeros(shape, dtype=int)
 
+    # Per-pixel valid-observation counters (nodata excluded, undetect+real included) —
+    # this is what makes coverage genuinely spatial rather than a single national
+    # file-count ratio.
+    valid_slots_3d = np.zeros(shape, dtype=int)
+    valid_slots_7d = np.zeros(shape, dtype=int)
+    valid_slots_14d = np.zeros(shape, dtype=int)
+
     event_mm = np.zeros(shape)
     event_last_wet_epoch = np.full(shape, -np.inf)
     last_significant_epoch = np.full(shape, -np.inf)
     last_significant_mm = np.zeros(shape)
     last_strong_epoch = np.full(shape, -np.inf)
     last_strong_mm = np.zeros(shape)
+
+    # Optional quality enrichment (spec Component 3) — summed/counted only over the
+    # files that actually carried a quality1 subgroup, so a mix of quality-bearing and
+    # quality-less cached files still produces an honest mean, not a value silently
+    # diluted by files that had no quality data at all.
+    quality_sum = np.zeros(shape)
+    quality_count = np.zeros(shape, dtype=int)
 
     window_buffer = deque()
     window_sum = np.zeros(shape)
@@ -456,13 +476,26 @@ def accumulate_rainfall(
                 f"{path} has a different grid shape than the first cached file — "
                 "radar product geometry is expected to be stable"
             )
+        # A pixel is a "valid observation" (counts toward coverage) whenever
+        # parse_radar_composite did NOT decode it to NaN — i.e. nodata is excluded,
+        # but undetect (a confirmed-dry reading) and any real rate value both count.
+        pixel_valid = ~np.isnan(rate_mm_h)
+
+        quality = parse_radar_quality(path, row_slice=row_slice, col_slice=col_slice)
+        if quality is not None:
+            quality_sum += quality
+            quality_count += 1
+
         mm_this_slot = np.nan_to_num(rate_mm_h, nan=0.0) * slot_hours
         rain_14d += mm_this_slot
+        valid_slots_14d += pixel_valid.astype(int)
         if timestamp >= cutoff_7d:
             rain_7d += mm_this_slot
+            valid_slots_7d += pixel_valid.astype(int)
             count_7d += 1
         if timestamp >= cutoff_3d:
             rain_3d += mm_this_slot
+            valid_slots_3d += pixel_valid.astype(int)
             count_3d += 1
         wet_mask = np.nan_to_num(rate_mm_h, nan=-1.0) > 0.0
         last_wet_epoch = np.where(wet_mask, epoch, last_wet_epoch)
@@ -503,10 +536,32 @@ def accumulate_rainfall(
         max_24h_rain = np.maximum(max_24h_rain, window_sum)
 
     coverage = {
-        "3d": count_3d / expected_slots_3d if expected_slots_3d else 0.0,
-        "7d": count_7d / expected_slots_7d if expected_slots_7d else 0.0,
-        "14d": len(files) / expected_slots_14d if expected_slots_14d else 0.0,
+        "3d": _validate_coverage(
+            count_3d / expected_slots_3d if expected_slots_3d else 0.0, label="3d"
+        ),
+        "7d": _validate_coverage(
+            count_7d / expected_slots_7d if expected_slots_7d else 0.0, label="7d"
+        ),
+        "14d": _validate_coverage(
+            len(files) / expected_slots_14d if expected_slots_14d else 0.0, label="14d"
+        ),
     }
+
+    coverage_3d_px = np.clip(
+        valid_slots_3d / expected_slots_3d if expected_slots_3d else np.zeros(shape),
+        0.0,
+        1.0,
+    )
+    coverage_7d_px = np.clip(
+        valid_slots_7d / expected_slots_7d if expected_slots_7d else np.zeros(shape),
+        0.0,
+        1.0,
+    )
+    coverage_14d_px = np.clip(
+        valid_slots_14d / expected_slots_14d if expected_slots_14d else np.zeros(shape),
+        0.0,
+        1.0,
+    )
 
     hours_since_any_rain = np.where(
         last_wet_epoch == -np.inf,
@@ -536,5 +591,10 @@ def accumulate_rainfall(
     points["last_significant_event_mm"] = last_significant_mm.ravel()
     points["last_strong_event_mm"] = last_strong_mm.ravel()
     points["max_24h_rain_14d"] = max_24h_rain.ravel()
+    points["coverage_3d"] = coverage_3d_px.ravel()
+    points["coverage_7d"] = coverage_7d_px.ravel()
+    points["coverage_14d"] = coverage_14d_px.ravel()
+    quality_mean = np.where(quality_count > 0, quality_sum / np.maximum(quality_count, 1), np.nan)
+    points["quality_mean"] = quality_mean.ravel()
     points = points.to_crs("EPSG:3301")
     return points, coverage

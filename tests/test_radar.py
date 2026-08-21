@@ -687,11 +687,13 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
     points, coverage = accumulate_rainfall(cache_dir, now, bounds)
 
     row0_col0 = points[(points["row"] == 0) & (points["col"] == 0)].iloc[0]
-    # (1.0 + 2.0 + 0.0) mm/h * (5/60) h per slot = 0.25 mm total
-    assert row0_col0["rain_3d_mm"] == pytest.approx(0.25)
-    assert row0_col0["rain_14d_mm"] == pytest.approx(0.25)
+    # accumulate_rainfall attributes a full _RADAR_SLOT_MINUTES=15-minute slot to every
+    # cached file regardless of the real wall-clock gap between files, so
+    # (1.0 + 2.0 + 0.0) mm/h * (15/60) h per slot = 0.75 mm total.
+    assert row0_col0["rain_3d_mm"] == pytest.approx(0.75)
+    assert row0_col0["rain_14d_mm"] == pytest.approx(0.75)
     assert row0_col0["hours_since_any_rain"] == pytest.approx(10 / 60)  # last wet slot was 10 min before `now`
-    assert row0_col0["wet_hours_72h"] == pytest.approx(2 * 5 / 60)  # 2 wet slots
+    assert row0_col0["wet_hours_72h"] == pytest.approx(2 * 15 / 60)  # 2 wet slots
 
     row1_col1 = points[(points["row"] == 1) & (points["col"] == 1)].iloc[0]
     assert row1_col1["rain_3d_mm"] == pytest.approx(0.0)
@@ -699,10 +701,11 @@ def test_accumulate_rainfall_sums_across_cached_files_in_window(tmp_path):
 
     # All 3 files fall within the 3d/7d/14d windows (they're 10 minutes apart, well
     # inside all three), but the expected slot counts differ per window, so the
-    # coverage ratios differ even though the numerator (3) is the same.
-    assert coverage["3d"] == pytest.approx(3 / 864)  # 3 files of ~864 expected in 3d
-    assert coverage["7d"] == pytest.approx(3 / 2016)  # 3 files of ~2016 expected in 7d
-    assert coverage["14d"] == pytest.approx(3 / 4032)  # 3 files of ~4032 expected in 14d
+    # coverage ratios differ even though the numerator (3) is the same. At the new
+    # 15-minute cadence, expected_slots_Nd = (N days * 24 * 60) // 15.
+    assert coverage["3d"] == pytest.approx(3 / 288)  # 3 files of 288 expected in 3d
+    assert coverage["7d"] == pytest.approx(3 / 672)  # 3 files of 672 expected in 7d
+    assert coverage["14d"] == pytest.approx(3 / 1344)  # 3 files of 1344 expected in 14d
 
 
 def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
@@ -711,15 +714,16 @@ def test_accumulate_rainfall_tracks_coverage_independently_per_window(tmp_path):
 
     now = _utc(2026, 8, 15, 0, 5)
 
-    # Full 5-minute-slot coverage for the trailing 3 days (864 expected slots), but
-    # only a handful of files scattered further back in days 4-14 — the 14-day
-    # aggregate should be far lower than the 3-day/7-day windows even though the
-    # 3-day/7-day windows are essentially complete. With the half-open [start, end)
-    # boundary, create one extra file (at exactly 'now') so that after excluding that
-    # boundary file, 864 files remain in the 3d window.
-    slots_3d = (3 * 24 * 60) // 5
+    # Full 15-minute-slot coverage for the trailing 3 days (288 expected slots at the
+    # new _RADAR_SLOT_MINUTES=15 cadence), but only a handful of files scattered
+    # further back in days 4-14 — the 14-day aggregate should be far lower than the
+    # 3-day/7-day windows even though the 3-day/7-day windows are essentially
+    # complete. With the half-open [start, end) boundary, create one extra file (at
+    # exactly 'now') so that after excluding that boundary file, 288 files remain in
+    # the 3d window.
+    slots_3d = (3 * 24 * 60) // 15
     for i in range(slots_3d + 1):
-        ts = now - timedelta(minutes=5 * i)
+        ts = now - timedelta(minutes=15 * i)
         _write_fake_composite(
             cache_dir / f"{ts:%Y%m%dT%H%M%SZ}_{i}.h5",
             rate_grid=[[0.0, 0.0], [0.0, 0.0]],
@@ -757,8 +761,10 @@ def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path)
     cache_dir = tmp_path / "radar_cache"
     cache_dir.mkdir()
 
-    # Single-pixel (1x1) grid. rate=24.0 mm/h * (5/60)h = 2.0mm per slot.
-    # Slot sequence (5 min apart): 2,2,2,2,2 mm -> cumulative event total 2,4,6,8,10.
+    # Single-pixel (1x1) grid. rate=8.0 mm/h * (15/60)h = 2.0mm per slot (each cached
+    # file is attributed a full _RADAR_SLOT_MINUTES=15-minute slot regardless of the
+    # real wall-clock gap between files, same as elsewhere in this file).
+    # Slot sequence: 2,2,2,2,2 mm -> cumulative event total 2,4,6,8,10.
     # Crosses SIGNIFICANT_EVENT_MM=5.0 at the 3rd slot (cumulative 6.0), continues
     # advancing through the 4th slot (cumulative 8.0), and reaches STRONG_EVENT_MM=10.0
     # at the 5th slot (cumulative 10.0) since it's still the same event.
@@ -766,7 +772,7 @@ def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path)
                              "20260815T001500Z", "20260815T002000Z"]):
         _write_fake_composite(
             cache_dir / f"{ts}_{i}.h5",
-            rate_grid=[[24.0]],
+            rate_grid=[[8.0]],
             projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
             xscale=359.07,
             yscale=346.70,
@@ -778,7 +784,7 @@ def test_accumulate_rainfall_tracks_significant_and_strong_rain_events(tmp_path)
     # already-recorded significant/strong stats from the first event.
     _write_fake_composite(
         cache_dir / "20260815T080000Z_6.h5",
-        rate_grid=[[12.0]],
+        rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
         yscale=346.70,
@@ -807,7 +813,7 @@ def test_accumulate_rainfall_never_had_a_significant_event_is_nan(tmp_path):
     # Single slot, only 1.0mm — never reaches SIGNIFICANT_EVENT_MM=5.0.
     _write_fake_composite(
         cache_dir / "20260815T000000Z_1.h5",
-        rate_grid=[[12.0]],
+        rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
         yscale=346.70,
@@ -833,7 +839,7 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     # Two slots close together (1.0mm each, same 24h window) = 2.0mm concentrated.
     _write_fake_composite(
         cache_dir / "20260815T000000Z_1.h5",
-        rate_grid=[[12.0]],
+        rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
         yscale=346.70,
@@ -842,7 +848,7 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     )
     _write_fake_composite(
         cache_dir / "20260815T000500Z_2.h5",
-        rate_grid=[[12.0]],
+        rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
         yscale=346.70,
@@ -852,7 +858,7 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     # A 3rd slot 5 days later (well outside any 24h window containing the first two).
     _write_fake_composite(
         cache_dir / "20260820T000000Z_3.h5",
-        rate_grid=[[12.0]],
+        rate_grid=[[4.0]],
         projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
         xscale=359.07,
         yscale=346.70,
@@ -869,6 +875,163 @@ def test_accumulate_rainfall_max_24h_rain_captures_concentrated_window_not_whole
     # the same window as the late one.
     assert row["rain_14d_mm"] == pytest.approx(3.0)
     assert row["max_24h_rain_14d"] == pytest.approx(2.0)
+
+
+def test_accumulate_rainfall_tracks_per_pixel_coverage_not_just_national(tmp_path):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+
+    # Pixel [0,0]: real value both slots (covered). Pixel [0,1]: undetect both slots
+    # (covered, confirmed-dry). Pixel [1,0]: nodata both slots (NOT covered).
+    # Override projdef/xscale/yscale/ul_lon/ul_lat to place this fake tiny 2x2 grid so
+    # it actually overlaps the requested Estonia-area bbox below — the same override
+    # every other accumulate_rainfall test in this file uses. Without it,
+    # _write_fake_composite's real-OPERA defaults (a continental LAEA grid whose UL
+    # corner is near Greenland, 2km pixels) would place this fake 2-pixel-wide "full
+    # field" nowhere near (20-30E, 56-62N), and radar_bbox_slice would compute an
+    # empty/out-of-range slice — not a bug in accumulate_rainfall, just a test-fixture
+    # location mismatch that would otherwise make this test vacuously pass or IndexError.
+    _mercator_kwargs = dict(
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_RATE.h5",
+        rate_grid=[[1.0, -8888000.0], [-9999000.0, 0.0]],
+        **_mercator_kwargs,
+    )
+    with h5py.File(cache_dir / "20260815T000000Z_RATE.h5", "r+") as f:
+        raw = f["dataset1/data1/data"][:]
+        raw[0, 1] = -8888000.0  # undetect
+        raw[1, 0] = -9999000.0  # nodata
+        f["dataset1/data1/data"][:] = raw
+    _write_fake_composite(
+        cache_dir / "20260815T001500Z_RATE.h5",
+        rate_grid=[[1.0, 0.0], [0.0, 0.0]],
+        **_mercator_kwargs,
+    )
+    with h5py.File(cache_dir / "20260815T001500Z_RATE.h5", "r+") as f:
+        raw = f["dataset1/data1/data"][:]
+        raw[0, 1] = -8888000.0
+        raw[1, 0] = -9999000.0
+        f["dataset1/data1/data"][:] = raw
+
+    now = _utc(2026, 8, 15, 0, 30)
+    bounds = (20.0, 56.0, 30.0, 62.0)
+
+    points, coverage = accumulate_rainfall(cache_dir, now, bounds)
+
+    row0_col0 = points[(points["row"] == 0) & (points["col"] == 0)].iloc[0]
+    row0_col1 = points[(points["row"] == 0) & (points["col"] == 1)].iloc[0]
+    row1_col0 = points[(points["row"] == 1) & (points["col"] == 0)].iloc[0]
+
+    # Per-pixel coverage_3d is valid_slots_3d / expected_slots_3d (the same nominal
+    # 3-day-window denominator national coverage uses, per the design spec's "per-pixel,
+    # per-rolling-window ... expected-slot counts" framing) — with only 2 real files
+    # cached (against an expected_slots_3d of 288 at the new 15-min cadence), a fully
+    # valid pixel's coverage_3d is 2/288, not 1.0 (this file only has 2 slots to ever
+    # be valid in, so 1.0 would require a full 3-day-window's worth of files).
+    expected_slots_3d = (3 * 24 * 60) // 15
+    assert row0_col0["coverage_3d"] == pytest.approx(2 / expected_slots_3d)
+    assert row0_col1["coverage_3d"] == pytest.approx(2 / expected_slots_3d)
+    # 0 valid slots at [1,0] (nodata both times) -> pixel coverage 0.0 there, even
+    # though 2 real files were downloaded and cached — this is the whole point of
+    # per-pixel coverage: file COUNT is not the same as per-pixel VALIDITY.
+    assert row1_col0["coverage_3d"] == pytest.approx(0.0)
+
+
+def test_accumulate_rainfall_slot_minutes_is_15():
+    from shroom_fm.radar import _RADAR_SLOT_MINUTES
+
+    assert _RADAR_SLOT_MINUTES == 15
+
+
+def test_accumulate_rainfall_coverage_never_exceeds_one_even_with_extra_files(tmp_path):
+    # Regression test for the proven 4050/4032=1.0044... bug: even if MORE files exist
+    # in the cache than the nominal expected-slot count for a window (real-world publish
+    # jitter), the returned per-window NATIONAL coverage value must never exceed 1.0.
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    now = _utc(2026, 8, 15, 3, 0)
+    # 13 files at 15-minute spacing across a 3-hour window — expected_slots for a
+    # 3-hour span at 15-min cadence is 12; write one extra to simulate jitter.
+    for i in range(13):
+        minutes_ago = 180 - i * 15
+        ts = now - timedelta(minutes=minutes_ago)
+        _write_fake_composite(
+            cache_dir / f"{ts:%Y%m%dT%H%M%S}Z_RATE.h5", rate_grid=[[0.0]]
+        )
+
+    points, coverage = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
+
+    for key in ("3d", "7d", "14d"):
+        assert 0.0 <= coverage[key] <= 1.0
+
+
+def test_accumulate_rainfall_carries_through_quality_as_optional_enrichment(tmp_path):
+    # Spec Component 3: the real per-pixel quality1 layer, when present in a cached
+    # file, must be carried through as an optional quality_mean column — averaged
+    # only over files that actually had a quality subgroup, never faked for files
+    # that lack one.
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    # See the comment on test_accumulate_rainfall_tracks_per_pixel_coverage_not_just_
+    # national for why this location override is needed against the fake tiny grid.
+    _mercator_kwargs = dict(
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_RATE.h5",
+        rate_grid=[[0.0, 0.0]],
+        quality_grid=[[1.0, 0.6]],
+        **_mercator_kwargs,
+    )
+    _write_fake_composite(
+        cache_dir / "20260815T001500Z_RATE.h5",
+        rate_grid=[[0.0, 0.0]],
+        quality_grid=[[0.8, 0.4]],
+        **_mercator_kwargs,
+    )
+
+    now = _utc(2026, 8, 15, 0, 30)
+    points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
+
+    row0_col0 = points[(points["row"] == 0) & (points["col"] == 0)].iloc[0]
+    row0_col1 = points[(points["row"] == 0) & (points["col"] == 1)].iloc[0]
+    assert row0_col0["quality_mean"] == pytest.approx((1.0 + 0.8) / 2)
+    assert row0_col1["quality_mean"] == pytest.approx((0.6 + 0.4) / 2)
+
+
+def test_accumulate_rainfall_quality_mean_is_nan_when_no_cached_file_has_quality(
+    tmp_path,
+):
+    cache_dir = tmp_path / "radar_cache"
+    cache_dir.mkdir()
+    # No quality_grid given — matches real OPERA files that lack a quality subgroup.
+    # Same location override as above, so points is genuinely non-empty and this test
+    # actually exercises the per-pixel path instead of passing vacuously on an empty
+    # GeoDataFrame.
+    _write_fake_composite(
+        cache_dir / "20260815T000000Z_RATE.h5",
+        rate_grid=[[0.0, 0.0]],
+        projdef="+proj=merc +a=6371000 +lat_0=68 +lon_0=25",
+        xscale=359.07,
+        yscale=346.70,
+        ul_lon=20.354150207505985,
+        ul_lat=61.33568305549931,
+    )
+
+    now = _utc(2026, 8, 15, 0, 15)
+    points, _ = accumulate_rainfall(cache_dir, now, (20.0, 56.0, 30.0, 62.0))
+
+    assert points["quality_mean"].isna().all()
 
 
 def test_parse_radar_quality_returns_none_when_no_quality_subgroup_present(tmp_path):

@@ -221,7 +221,7 @@ a mediocre day, not a good one.
 | Species | Estonian | Look for |
 |---|---|---|
 | Chanterelle | kukeseen | Pine and pine-mixed forest; occurs in patches, so a previous good spot stays good |
-| Kitsemampel (gypsy mushroom) | kitsemampel | Sparse, open pine — especially pine forest edging into bog |
+| Gypsy mushroom | kitsemampel | Sparse, open pine — especially pine forest edging into bog |
 | Aspen bolete | haavapuravik | Anywhere with a meaningful aspen component, even in a mixed stand |
 | Birch bolete | kasepuravik | Birch presence is the main signal — dry *or* moist forest both count |
 | Porcini | kivipuravik / porcini | Spruce and spruce-mixed forest primarily, pine-associated porcini also relevant |

@@ -1,0 +1,7 @@
+# Copy this file to config.toml and fill in your own coordinates.
+# config.toml is gitignored -- your home location is never committed.
+
+# Decimal degrees, WGS84. Example values below are roughly central Estonia --
+# replace with your own home/cabin/starting point.
+home_lat = 58.85
+home_lon = 25.55

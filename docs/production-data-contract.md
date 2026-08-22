@@ -241,7 +241,7 @@ species, rather than a single national top-10 that used to collapse onto one reg
 | `macrocluster_id` | int | Region this candidate belongs to (present on all tiers, including `remote_high_value` — informational there, not a selection criterion) |
 | `rank_macrocluster` | int or `null` | 1–10 rank **within its (species, macrocluster) bucket** — only set on `"ranked"` rows |
 | `rank` | int or `null` | 1–10 rank **within its species, globally** — only set on `"remote_high_value"` rows (different scope from `rank_macrocluster`, don't conflate) |
-| `scout_score` | float | Final ranking score = `ecotone_score × access_modifier × fruiting_modifier`. Real magnitudes are small (e.g. `0.0001`–`0.001`) — rank/compare, don't expect scores near 1.0 |
+| `scout_score` | float | Final ranking score = `ecotone_score × access_modifier × fruiting_modifier`. Magnitude is weather-dependent — a real dry-spell run once produced scores near `0.0001`, while a real rainy-week run (see "Score Semantics" below) produced ranked-tier scores of `0.24`–`0.81`. Don't hardcode an expected magnitude; rank/compare within one run instead |
 | `ecotone_score` | float | The species' boundary-contrast score for this ecotone |
 | `access_modifier` | float (0–1) | Best of the two adjacent stands' `access_score` |
 | `access_confidence`, `access_reason`, `nearest_car_road_m` | — | Same meaning as on `eraldis.geojson`, for the better-served adjacent stand |
@@ -256,36 +256,38 @@ species, rather than a single national top-10 that used to collapse onto one reg
 | `transition_length_m`, `dominant_species_a`, `dominant_species_b` | — | Same meaning as on `ecotones.geojson` |
 | `id_a`, `id_b` | int | The underlying ecotone's stand pair — join key back to `ecotones.geojson`/`eraldis.geojson` |
 
-**Real example — a `"ranked"` row (post-redesign shape; geometry shortened):**
+**Real example — a `"ranked"` row (post-redesign shape, and post-CRS-fix — this file is
+now genuinely EPSG:4326 on disk, see the CRS note in the domain glossary above; from a
+real rainy-week run, geometry shortened):**
 ```json
 {
   "type": "Feature",
   "properties": {
-    "species": "kitsemampel",
+    "species": "aspen_bolete",
     "tier": "ranked",
-    "macrocluster_id": 9,
+    "macrocluster_id": 20,
     "rank_macrocluster": 1,
     "rank": null,
-    "scout_score": 0.0001223,
-    "ecotone_score": 1.0308,
-    "access_modifier": 1.0,
+    "scout_score": 0.8084,
+    "ecotone_score": 1.0399,
+    "access_modifier": 0.9921,
     "access_confidence": "CONDITIONAL",
-    "access_reason": "0m from Muu tee-class road",
-    "nearest_car_road_m": 0.0,
-    "fruiting_score": 0.0001187,
+    "access_reason": "12m from Muu tee-class road",
+    "nearest_car_road_m": 11.90,
+    "fruiting_score": 0.7835,
     "weather_data_quality": "complete",
-    "weather_data_coverage": 1.0,
-    "weather_as_of": "2026-08-21T15:35:00.000Z",
+    "weather_data_coverage": 0.9993,
+    "weather_as_of": "2026-08-22T09:26:09.791Z",
     "exclusion_reason": null,
     "suppressed_by_id": null,
     "suppression_distance_m": null,
     "pre_suppression_rank": null,
-    "nearby_suppressed_count": 39,
-    "nearby_best_suppressed_score": 0.0001156,
-    "transition_length_m": 138.73,
-    "dominant_species_a": "pine",
-    "dominant_species_b": "pine",
-    "id_a": 691624, "id_b": 691638
+    "nearby_suppressed_count": 14,
+    "nearby_best_suppressed_score": 0.7859,
+    "transition_length_m": 219.84,
+    "dominant_species_a": "aspen",
+    "dominant_species_b": "other",
+    "id_a": 11890267, "id_b": 11890268
   },
   "geometry": { "type": "Polygon", "coordinates": ["...same boundary-strip shape as the parent ecotones.geojson row..."] }
 }
@@ -315,24 +317,63 @@ into via `scout_candidates.geojson` filtered to that `macrocluster_id`.
 | `today_weather_coverage_{species}` | float or `null` | Region-wide weather-data coverage for this species' eligible pool; `null` (not `0`) if the pool is empty |
 | `today_weather_status_{species}` | string or `null` | `"ok"` / `"insufficient_coverage"` / `null` (empty pool) — **the field to check before trusting a region/species' ranking is real and not just quietly empty** |
 
-**Real example (trimmed to one species repeated pattern, geometry shortened):**
+**Real example (trimmed to one species repeated pattern, geometry shortened; same real
+run as the `scout_candidates.geojson` example above — note `today_top_target_id`
+matches that row's `id_a`_`id_b`):**
 ```json
 {
   "type": "Feature",
   "properties": {
-    "macrocluster_id": 16,
-    "as_of": "2026-08-20T13:50:39.086Z",
+    "macrocluster_id": 20,
+    "as_of": "2026-08-22T11:19:14.951Z",
     "cross_macrocluster_ecotone_count": 0,
-    "today_ranked_count_kitsemampel": 10,
-    "today_top_score_kitsemampel": 0.0001223,
-    "today_top3_mean_score_kitsemampel": 0.0001185,
-    "today_top_target_id_kitsemampel": "691624_691638",
-    "today_weather_coverage_kitsemampel": 1.0,
-    "today_weather_status_kitsemampel": "ok"
+    "today_ranked_count_aspen_bolete": 10,
+    "today_top_score_aspen_bolete": 0.8084,
+    "today_top3_mean_score_aspen_bolete": 0.7131,
+    "today_top_target_id_aspen_bolete": "11890267_11890268",
+    "today_weather_coverage_aspen_bolete": 1.0,
+    "today_weather_status_aspen_bolete": "ok"
   },
   "geometry": { "type": "MultiPolygon", "coordinates": ["...same region outline as macroclusters.geojson..."] }
 }
 ```
+
+---
+
+## Score Semantics: worst → best scale, per field
+
+Every score below was derived by reading the actual scoring code (`src/shroom_fm/habitat.py`,
+`ecotone.py`, `access.py`, `fruiting.py`, `scout.py`, `macrocluster.py`), then verified
+against real min/max/mean values from the current production files (2026-08-22, post
+CRS-fix, a real rainy-week run — see the `fruiting_score_*` row below for how much this
+shifts with weather).
+
+| Field | File | Theoretical range | Real observed (this run) | Worst → Best meaning |
+|---|---|---|---|---|
+| `access_score` / `access_modifier` | `eraldis.geojson` / joined onto ecotones | **[0, 1]**, exact | 0.00 – 1.00 (mean 0.85) | **0** = no car-reachable road within 1500m (or none at all — linear decay, `1 − distance/1500`). **1** = essentially on/adjacent to a road. Purely geometric, not species-specific. |
+| `stand_habitat_score_{species}` | `eraldis.geojson` | **[0, 1]**, exact | 0.00 – 1.00 | **0** = no host trees of this species present, or the site type is off this species' ecological gradient entirely. **1** = ideal host-tree composition (at/above the species' saturation share of its top-affinity host) **and** ideal site type. The intrinsic "is this patch of forest a good home" score — no weather, no access, no boundary effects. |
+| `ecotone_score_{species}` | `ecotones.geojson` | **[0, ~1.3)** — `0.7·max + 0.3·min` of the two adjacent stands' habitat scores, times `(1 + exploration_bonus)`, bonus capped at 0.3 | 0.00 – 1.20 (mean 0.55 – 0.64) | **0** = neither adjacent stand is viable habitat. **~0.5 – 0.9** = solid single-stand-grade habitat with some transition interest. **Above 1.0** = the boundary itself is a standout — both stands are decent-to-strong habitat *and* the transition is unusually rich (species contrast, moisture/site-type change, age-class contrast, drainage change, or a long boundary worth walking). |
+| `exploration_bonus` | `ecotones.geojson` | **[0, 0.3]** | 0.003 – 0.298 (mean 0.10) | Sub-component folded into `ecotone_score` above, not usually read standalone. 0 = a bland, uniform boundary; 0.3 = maximal contrast across all five contributing dimensions. |
+| `fruiting_score_{species}` | `weather_eraldis.geojson` | **(0, 1)**, asymptotic ceiling (never quite 1) | 0.18 – 0.73 this run (mean ~0.38) | The only **time-varying** score — recompute before every trip. **Near 0** = wrong season, or dry weeks with no qualifying rain (a real dry-spell run once produced ~0.0001 project-wide). **~0.6 – 0.8+** = right season, recent rain, good temperature, sustained humidity — conditions favor fruiting *right now*, independent of how good the habitat itself is. |
+| `scout_score` | `scout_candidates.geojson`, tiers `ranked`/`suppressed_by_nearby` | `ecotone_score × access_modifier × fruiting_modifier` — practically **[0, ~1]** | ranked tier: 0.24 – 0.81 (mean 0.49) this run; a dry-spell run instead produced ~0.0001 – 0.001 | The final "go here today" composite. **Multiplicative, not additive** — a candidate must be simultaneously good on habitat/ecotone quality, reachable, *and* currently weather-favorable; any single factor near 0 collapses the whole score (e.g. a candidate exactly 1500m from a road gets `access_modifier = 0` → `scout_score = 0`, a real, expected value seen in real `suppressed_by_nearby` rows — not a bug). |
+| `scout_score` on `remote_high_value` rows | same file | always `null` by design | n=50 this run, all null | Not on the same scale at all — these rows are ranked by raw `ecotone_score` instead, because the multiplicative gate (access confirmation, or fruiting data) never resolved. Never compare a `remote_high_value` row's implied quality against a `ranked` row's `scout_score` number; compare `ecotone_score` instead. |
+| `today_top_score_{species}` / `today_top3_mean_score_{species}` | `macrocluster_state.geojson` | same scale as `scout_score` | 0.37 – 0.68 / 0.36 – 0.67 this run | Just the max / mean-of-top-3 `scout_score` within that region — a region-level "how good is the best spot here today" summary, for picking *which region* to drive to before drilling into individual candidates. |
+| `today_weather_coverage_{species}` | `macrocluster_state.geojson` | **[0, 1]** | 1.00 everywhere this run | Not a desirability score — a **data-trust** indicator: fraction of that region's eligible candidates that actually have real fruiting data today. Low values mean "this region's ranking may be unreliable today," not "bad spot." Check `today_weather_status_{species}` for the same signal as a categorical. |
+
+**For QGIS symbology specifically:**
+
+- `stand_habitat_score_*` / `access_score`: clean `[0,1]`, safe for a simple linear
+  graduated color ramp (e.g. red→green, 0→1).
+- `ecotone_score_*`: don't clip at 1.0 — real data goes to ~1.2–1.3; a ramp with a break
+  at 1.0 ("baseline habitat" vs "standout boundary") is more informative than pure linear.
+- `fruiting_score_*`: rescale per-run rather than hardcoding breakpoints — its useful
+  range shifts with the season/weather (0.0001 in a dry spell vs 0.18–0.73 in a rainy
+  week), so a fixed 0–1 ramp would look uniformly "bad" during dry spells even when the
+  *relative* ranking that day is still meaningful.
+- `scout_score`: exclude `remote_high_value` rows (always `null`) from any
+  `scout_score`-based ramp; symbolize that tier separately by `ecotone_score` instead,
+  and probably as a visually distinct marker style (dashed outline / different shape),
+  since it structurally means "unconfirmed access," not "lower score."
 
 ---
 

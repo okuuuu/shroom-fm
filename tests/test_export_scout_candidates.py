@@ -3,7 +3,12 @@ import pandas as pd
 import pytest
 from shapely.geometry import Point
 
-from scripts.export_scout_candidates import OUTPUT_COLUMNS, build_scout_candidate_rows
+from scripts.export_scout_candidates import (
+    OUTPUT_COLUMNS,
+    build_scout_candidate_rows,
+    finalize_export,
+)
+from shroom_fm.eraldis import ESTONIAN_GRID_CRS
 from shroom_fm.habitat import TARGET_SPECIES
 
 
@@ -21,6 +26,29 @@ def _fill_other_species(joined_gdf: gpd.GeoDataFrame, primary_species: str) -> g
         result[f"ecotone_score_{species}"] = [1.0] * n
         result[f"fruiting_modifier_{species}"] = [0.5] * n
     return result
+
+
+def test_finalize_export_reprojects_to_wgs84():
+    # Regression test for a real production bug: build_scout_candidate_rows()
+    # intentionally returns geometry in ESTONIAN_GRID_CRS (EPSG:3301) -- metric
+    # coordinates are required for suppress_nearby_candidates' distance math -- but
+    # main() wrote that CRS straight to data/scout_candidates.geojson with no
+    # reprojection back to WGS84, unlike every other geometry-bearing output file in
+    # this pipeline (ecotones.geojson, macroclusters.geojson, macrocluster_state.geojson
+    # all stay EPSG:4326 on disk). A real point near home in EPSG:3301 (~500000, 6500000)
+    # must come back as real Estonian lon/lat (~20-30, ~55-62), not raw grid meters.
+    combined = gpd.GeoDataFrame(
+        {"species": ["chanterelle"]},
+        geometry=[Point(500000, 6500000)],
+        crs=ESTONIAN_GRID_CRS,
+    )
+
+    result = finalize_export(combined)
+
+    assert result.crs.to_string() == "EPSG:4326"
+    point = result.geometry.iloc[0]
+    assert 20 < point.x < 30
+    assert 55 < point.y < 62
 
 
 def test_build_scout_candidate_rows_ranks_each_macrocluster_independently():

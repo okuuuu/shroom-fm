@@ -4,7 +4,7 @@ import geopandas as gpd
 import pandas as pd
 import pyogrio
 
-from shroom_fm.eraldis import ESTONIAN_GRID_CRS
+from shroom_fm.eraldis import ESTONIAN_GRID_CRS, WGS84_CRS
 from shroom_fm.fruiting import join_ecotone_fruiting
 from shroom_fm.habitat import TARGET_SPECIES
 from shroom_fm.macrocluster import attach_macrocluster_id
@@ -180,6 +180,14 @@ def build_scout_candidate_rows(
     return combined[OUTPUT_COLUMNS]
 
 
+def finalize_export(combined: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """build_scout_candidate_rows() intentionally returns geometry in
+    ESTONIAN_GRID_CRS (metric, for suppress_nearby_candidates' distance math) --
+    reproject back to WGS84 before writing, matching every other geometry-bearing
+    output file in this pipeline."""
+    return combined.to_crs(WGS84_CRS)
+
+
 def main() -> None:
     _validate_columns(ERALDIS_PATH, ERALDIS_COLUMNS)
     eraldis_gdf = pyogrio.read_dataframe(
@@ -206,6 +214,8 @@ def main() -> None:
             f"No {OUTPUT_PATH} written — refusing to publish an untrustworthy ranking."
         )
         raise SystemExit(1)
+
+    combined = finalize_export(combined)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     combined.to_file(OUTPUT_PATH, driver="GeoJSON")

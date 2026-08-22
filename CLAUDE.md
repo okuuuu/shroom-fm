@@ -27,11 +27,18 @@ and kasvukoht site-type suitability, kept as two distinct scores rather than one
 segments, and barrier-snap exclusion of segments near a permanently-closed barrier),
 `access.py` (per-eraldis `AccessScore` from nearest-road distances, additive-only onto
 `data/eraldis.geojson`), and `scout.py` (`ScoutScore` v1 — joins each ecotone to its two
-stands' `AccessScore`, taking `access_modifier = max(access_score_a, access_score_b)` and
-splitting candidates per species into a `ranked` tier, `scout_score = ecotone_score ×
-access_modifier × fruiting_modifier`, and a `remote_high_value` tier for ecologically-strong candidates the v1
+stands' `AccessScore`, taking `access_modifier = max(access_score_a, access_score_b)`,
+`scout_score = ecotone_score × access_modifier × fruiting_modifier`, and splitting
+candidates into a `ranked` tier now selected per `(species, macrocluster)` rather than per
+species alone (real production data showed a global per-species top-10 cut collapses onto a
+single macrocluster near home — see "Scout candidate selection: per-macrocluster ranking +
+spatial suppression" under "Macroclustering" below), a `suppressed_by_nearby` tier recording
+near-duplicate candidates a greedy spatial-suppression pass removed, and a global
+(not-per-macrocluster) `remote_high_value` tier for ecologically-strong candidates the v1
 access distance-proxy couldn't confirm a nearby road for — never a fabricated `0` or floor,
-see `docs/superpowers/specs/2026-08-17-scout-candidates-export-design.md`). All scripts are
+see `docs/superpowers/specs/2026-08-17-scout-candidates-export-design.md` and
+`docs/superpowers/specs/2026-08-21-scout-candidates-macrocluster-selection-design.md`). All
+scripts are
 runnable — see "Running the full pipeline" below for the exact command sequence and
 dependency order. The road-access piece of the Access/Eligibility layer has landed as
 `AccessScore` (see `docs/superpowers/specs/2026-08-17-road-access-design.md`) — additive-only
@@ -118,11 +125,18 @@ branches done; step 11 needs everything upstream; step 12 needs step 5 and step 
    steps 1-6)
 10. `uv run python scripts/score_access.py` — `AccessScore` onto `data/eraldis.geojson`
     (needs steps 1 and 9 already done)
-11. `uv run python scripts/export_scout_candidates.py` — top-10-per-species `ScoutScore` v1
-    shortlist → `data/scout_candidates.geojson` (needs steps 7, 8, and 10 already done, plus
-    the FruitingScore steps already run against a fresh `data/weather_eraldis.geojson`;
+11. `uv run python scripts/export_scout_candidates.py` — per-`(species, macrocluster)`
+    `ScoutScore` v1 shortlist (10 `ranked` candidates per species per macrocluster, plus a
+    global, not-per-macrocluster, `remote_high_value` tier and a `suppressed_by_nearby`
+    tier recording near-duplicate candidates removed by greedy spatial suppression — see
+    "Scout candidate selection: per-macrocluster ranking + spatial suppression" below) →
+    `data/scout_candidates.geojson` (needs steps 7, 8, and 10 already done, plus the
+    FruitingScore steps already run against a fresh `data/weather_eraldis.geojson`;
     `main.py`'s real `STEPS` list runs `score_fruiting`/`score_ecotone_fruiting` between
-    steps 10 and 11, not shown as separate numbered steps here — same as before this task)
+    steps 10 and 11, not shown as separate numbered steps here — same as before this task).
+    **Fixed and verified at production scale** (initially OOM-killed the same way step 12
+    once did, since fixed the same way — see "Scout candidate selection" below for the real
+    56m57.9s post-fix run and its cross-macrocluster spot-check)
 12. `uv run python scripts/rollup_macroclusters.py` — joins today's
     `data/scout_candidates.geojson` (step 11) against `data/macroclusters.geojson` (step 5)
     for a per-macrocluster daily snapshot → `data/macrocluster_state.geojson` (needs steps 5
@@ -145,11 +159,19 @@ radius yielding more roads/barriers than before). Step 3 is fast (local computat
 11,658 forest blocks, 1 flagged `oversized_block`); step 5 (`compute_macroclusters`), after
 the scipy-based fix described in "Macroclustering" below, took **6m1s** real time (22
 macroclusters, 0 oversized). Steps 6-8 are fast (local computation), step 10 takes well
-under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop), step
-11 is near-instant. Step 12 (`rollup_macroclusters`) initially OOM-killed at real scale
-(reproduced twice) for a separate, unrelated memory-scaling reason, but after the
-column-subset read fix now completes in **2m12s real time** (22 macrocluster states, 0
-cross-macrocluster ecotones); see "Macroclustering" below.
+under a minute (spatial-indexed via `geopandas.sjoin_nearest`, not a brute-force loop). Step
+11 (`export_scout_candidates`), under the older global-top-10 selection scheme, used to be
+near-instant, but the per-`(species, macrocluster)` redesign (see "Scout candidate
+selection: per-macrocluster ranking + spatial suppression" below) initially OOM-killed at
+real scale for the same column-subset-read reason as step 12 below, and — even after that
+fix — now genuinely takes **56m57.9s** real time, since ranking 5 species independently
+against up to 22 macrocluster buckets multiplies the row-wise work step 11 does; see that
+section for the real timing, the real 4,384-row output, and why this is honest, not
+regressed, behavior for a script that used to look instant. Step 12 (`rollup_macroclusters`)
+initially OOM-killed at real scale (reproduced twice) for a separate, unrelated
+memory-scaling reason, but after the column-subset read fix now completes in **2m12s real
+time** (22 macrocluster states, 0 cross-macrocluster ecotones) — its most recent real run,
+after step 11's own redesign, took 3m9.4s instead; see "Macroclustering" below.
 
 Note: the road/barrier counts above (82,731 / 1,878) are higher than an earlier plan
 document's "50,008 roads, 1,564 barriers" figure — that figure was measured at the old
@@ -653,6 +675,151 @@ both stands of a pair inside the same `forest_block`, hence the same `macroclust
 `data/macrocluster_state.geojson` has therefore now been produced and spot-checked against
 real data end-to-end. The full 247-test suite passes unchanged (this fix touches only the
 thin `rollup_macroclusters.py` orchestrator script, which has no dedicated tests).
+
+### Scout candidate selection: per-macrocluster ranking + spatial suppression (2026-08-21)
+
+The Round 3 spot-check above found a real usability bug, not just a memory bug: every one
+of the 5 species' 10 `ranked` `scout_candidates.geojson` rows fell in `macrocluster_id ==
+16` (the macrocluster nearest home) — `ScoutScore`'s access-modifier weighting makes
+proximity to home dominate a single national top-10 cut, so all 21 other real macroclusters
+structurally got zero ranked candidates regardless of how ecologically strong their own
+local candidates were. `scripts/export_scout_candidates.py` was redesigned (plan:
+`docs/superpowers/plans/2026-08-21-scout-candidates-macrocluster-selection.md`, design:
+`docs/superpowers/specs/2026-08-21-scout-candidates-macrocluster-selection-design.md`) to
+select `ranked` candidates per `(species, macrocluster)` bucket instead — a scouting trip
+targets one macrocluster at a time, so every macrocluster needs its own locally-ranked
+shortlist rather than a share of one nationally-ranked list. `SCOUT_CANDIDATES_PER_SPECIES_PER_MACROCLUSTER
+= 10` (replaces the old global `TOP_N = 10`); with 5 species and up to 22 macroclusters this
+bounds `ranked` + `suppressed_by_nearby` rows in the low thousands, nowhere near "top 50
+places in Estonia," which is what the old global cut effectively produced.
+`remote_high_value` (ecologically-strong candidates the v1 access-distance proxy couldn't
+confirm a road for) **stays global per species, not split per macrocluster** — a deliberate,
+unchanged-from-before design choice, since its purpose (surfacing standout ecological
+candidates worth a road-access re-check, wherever in Estonia they are) doesn't depend on
+day-trip locality the way `ranked` does.
+
+A naive per-macrocluster top-10-by-score cut on its own risks near-duplicate candidates —
+several ecotones 50-150m apart that are, in practice, the same forest patch. Before the
+per-bucket cut, `scout.py`'s new `suppress_nearby_candidates` greedy nearest-neighbor
+suppression walks each bucket's real-scored candidates in score order, keeping a candidate
+only if its centroid is farther than `MIN_SCOUT_SEPARATION_M = 400.0` (a v0 engineering
+prior — an operational "don't publish two near-duplicate spots" heuristic, not a biological
+constant, same discipline as `ACCESS_DISTANCE_CAP_M`/`MACROCLUSTER_MAX_EXTENT_M`/etc.) from
+every already-**retained** candidate — a candidate suppressed earlier never itself becomes a
+reference point, so suppression only ever measures distance to what actually made the final
+list. Suppressed candidates are never silently discarded: they're recorded as a new
+`suppressed_by_nearby` tier, each row carrying `suppressed_by_id` (the retaining candidate's
+`f"{id_a}_{id_b}"`, the same convention `today_top_target_id_{species}` already uses),
+`suppression_distance_m` (the real centroid distance, not the threshold), and
+`pre_suppression_rank`. Only rows that already have a real (non-`None`) `scout_score` ever
+enter suppression — an access-ineligible or missing-fruiting-data candidate structurally
+can't suppress a real one, since `scout_score()` already returns `None` for those before
+suppression ever runs. Export volume is capped with `MAX_SUPPRESSED_EXAMPLES_PER_TARGET = 3`
+— each retained `ranked` row gets at most 3 exported `suppressed_by_nearby` example rows
+(the closest-scoring 3 of however many were actually suppressed), while a true
+`nearby_suppressed_count`/`nearby_best_suppressed_score` pair on the retained row itself
+always reports the real, uncapped total.
+
+The `MIN_SCOUT_WEATHER_COVERAGE = 0.90` publish gate (unchanged value) now applies **per
+`(species, macrocluster)`** for the `ranked` tier instead of once per species nationally — a
+species could show acceptable weather-data coverage nationally while one specific
+macrocluster's local coverage is genuinely poor, and the old global-only gate would still
+have ranked and published that macrocluster's candidates as if the data were trustworthy.
+`remote_high_value`'s gate stays global-per-species, unchanged. The per-bucket gate outcome
+is recorded as a new `today_weather_status_{species}` column on
+`data/macrocluster_state.geojson` (values: `"ok"` / `"insufficient_coverage"` / `None` for
+an empty eligible pool — mirrors `today_weather_coverage_{species}`'s existing
+`None`-for-empty-pool convention). `rollup_daily_state` also no longer re-derives each
+candidate's `macrocluster_id` via `ecotone_macrocluster_id` at rollup time — a new
+`macrocluster.attach_macrocluster_id` (reusing `ecotone_macrocluster_id`, unchanged
+resolution logic, just called earlier) attaches it once at export time instead, and
+`scout_candidates.geojson` carries the real column straight through.
+
+New columns on `data/scout_candidates.geojson`: `macrocluster_id`, `rank_macrocluster`,
+`suppressed_by_id`, `suppression_distance_m`, `pre_suppression_rank`,
+`nearby_suppressed_count`, `nearby_best_suppressed_score` (the last four are `None`/`0` on
+non-suppression rows, as appropriate). All 4 new/changed unit-test suites (`scout.py`'s
+`suppress_nearby_candidates`/`remote_high_value_for_species`/
+`scout_candidates_for_species_macrocluster`, `macrocluster.py`'s
+`attach_macrocluster_id`/`today_weather_status_*`, and a new
+`tests/test_export_scout_candidates.py` regression test asserting two well-separated
+macroclusters both get real ranked rows) passed against synthetic fixtures before this
+task's real-scale verification below.
+
+**Real-scale dry run, 2026-08-21: `export_scout_candidates.py` OOM-killed on its first real
+attempt, fixed, then verified end-to-end.** The first live run against the real 262,054-stand
+`data/eraldis.geojson`, 493,499-row `data/ecotones.geojson`, and
+`data/weather_eraldis.geojson` died at **2m0.977s** real time — `dmesg` confirmed a genuine
+OS OOM-kill (`oom-kill:constraint=CONSTRAINT_NONE`, `Killed process ... (python3) ...
+anon-rss:6724612kB` on this 7.7GB machine, shell-observed exit code 137) — the fourth time
+this project has hit exactly this class of "fine on fixtures, OOMs at real scale" bug (the
+other three: `compute_macroclusters`'s O(n⁴) blowup, `rollup_macroclusters`'s OOM, the OPERA
+radar HDF5 group-path bug — all documented above). Root cause, confirmed by reading the
+code: `main()` still loaded `data/eraldis.geojson` (787MB), `data/ecotones.geojson`
+(3.19GB), and `data/weather_eraldis.geojson` (1.1GB+) fully via `gpd.read_file()` — every
+column (including nested `composition` data) and every polygon — even though
+`attach_macrocluster_id`/`join_ecotone_access`/`join_ecotone_fruiting` only ever read a
+small named column subset from `eraldis_gdf`/`weather_gdf` and never touch their geometry at
+all (each candidate row's own geometry comes from `ecotones_gdf` via the `id_a`/`id_b` join,
+never from the other two files). This is the exact same defect Round 3 above already found
+and fixed in `rollup_macroclusters.py` — it had simply never been applied to
+`export_scout_candidates.py`, which this redesign was the first thing to actually exercise
+against real data end-to-end. Fixed identically: `eraldis_gdf` and `weather_gdf` are now
+read via `pyogrio.read_dataframe(path, columns=[...], read_geometry=False)` with the same
+minimal `ERALDIS_COLUMNS`/`WEATHER_COLUMNS` shape as `rollup_macroclusters.py`'s (plus the
+same `_validate_columns` schema-drift guard); `ecotones_gdf` keeps its real geometry (this
+script's own output needs per-candidate geometry, unlike `rollup_macroclusters.py`'s
+macrocluster-level output) but is still narrowed to its actually-used non-geometry columns
+(`id_a`, `id_b`, `transition_length_m`, `dominant_species_a`, `dominant_species_b`, 5×
+`ecotone_score_*`) via the same `columns=[...]` mechanism.
+
+After the fix, `time uv run python scripts/export_scout_candidates.py` completed
+successfully in **real 56m57.913s** (`user 56m43.452s`, `sys 0m9.235s`), printing `4384
+scout candidate rows saved to data/scout_candidates.geojson`. This is genuinely much slower
+than the old global-scheme script's near-instant runtime — expected, not a regression: the
+new design does 5 species' worth of independent ranking against up to 22 macrocluster
+buckets each, and both `suppress_nearby_candidates`'s per-bucket O(n·k) Python double-loop
+and `_compute_scored`'s row-wise zip/list-comprehension (flagged as a real, specific risk by
+the final whole-branch review that prompted this verification) are unvectorized — this real
+56m57.9s is the honest, measured cost of that, not a guess. It didn't hang or fail, so no
+emergency optimization was made; it's recorded here as a known, real, unresolved
+performance characteristic for a future pass, the same way `score_ecotone_fruiting.py`'s
+own row-wise cost was flagged under "FruitingScore" above without being fixed on the spot.
+Real output breakdown: `4384` total rows = `1100` `ranked` (22 macroclusters × 5 species ×
+10) + `3234` `suppressed_by_nearby` + `50` `remote_high_value` (22 macroclusters × 5 species
+× up to 10, capped by `REMOTE_HIGH_VALUE_TOP_N`).
+
+**The concrete fix confirmation — the actual point of this redesign:** grouping
+`data/scout_candidates.geojson`'s real `ranked` rows by `(species, macrocluster_id)` shows
+**all 22 real macroclusters** now have **exactly 10** `ranked` candidates for **every one**
+of the 5 real target species (`1100 = 22 × 5 × 10`, no macrocluster or species short) — a
+complete reversal of the Round 3 finding above, where 21 of 22 macroclusters got zero.
+`data/macrocluster_state.geojson`, produced by `time uv run python
+scripts/rollup_macroclusters.py` immediately after (**real 3m9.424s**, `22 macrocluster
+states rolled up, 0 cross-macrocluster ecotones (diagnostic)`), independently confirms the
+same thing from the rollup side: `today_ranked_count_{species} == 10` for all 22
+macroclusters and all 5 species (no double-counting or dropped candidates against the
+`scout_candidates.geojson` figures above), `today_weather_status_{species} == "ok"` for
+every macrocluster/species combination this run (the per-bucket weather gate never
+triggered `"insufficient_coverage"` this particular week), and
+`cross_macrocluster_ecotone_count` still `0` for all 22 macroclusters, consistent with the
+Round 3 finding that `touching`/`near_gap` adjacency almost always keeps both stands of a
+pair in the same macrocluster. Spot-checked individual rows: one real `ranked` row
+(kitsemampel, `macrocluster_id=0`, `rank_macrocluster=1`) carries `scout_score=0.3367`,
+`nearby_suppressed_count=39`, `nearby_best_suppressed_score=0.329905`; its corresponding
+`suppressed_by_nearby` row carries `suppressed_by_id="373583_12062484"`,
+`suppression_distance_m=177.46`, `pre_suppression_rank=3`, `scout_score=0.329905` — the
+suppression bookkeeping is internally consistent between the two rows. `remote_high_value`
+rows do carry a real (non-null) `macrocluster_id` value, inherited from the same
+`attach_macrocluster_id` pass applied to the whole joined frame before the tiers split
+apart — expected, and consistent with the design (`remote_high_value`'s *selection* ignores
+macrocluster grouping entirely; the column is just along for the ride as an informational
+field, not evidence the tier was accidentally bucketed).
+
+294/294 tests pass unchanged after the OOM fix (`uv run pytest tests/ -q`) — the fix touches
+only `main()`'s file-reading code in `export_scout_candidates.py`; `build_scout_candidate_rows`
+and everything it calls (the part all the pre-existing unit tests actually exercise) are
+untouched.
 
 ## Planned architecture
 

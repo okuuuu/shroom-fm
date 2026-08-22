@@ -9,16 +9,7 @@ data, and hands you a ranked, map-ready shortlist of places worth checking *this
 instead of you squinting at the Metsaregister web map guessing where the pine-bog edges
 are.
 
-<!-- IMAGE PLACEHOLDER: banner
-     A wide hero image for the top of the README. Good options:
-       - A real photo of one of the five target species (chanterelle, kitsemampel/gypsy
-         mushroom, aspen bolete, birch bolete, or porcini) in situ, ideally on a pine/
-         mixed-forest floor.
-       - A stylized screenshot of the QGIS/web map output (see the map placeholder
-         further down) cropped into a wide banner.
-     Save as docs/images/banner.png and reference it here:
-     ![shroom-fm banner](docs/images/banner.png)
--->
+![shroom-fm banner](docs/images/banner.png)
 
 ---
 
@@ -112,14 +103,7 @@ That last step produces the two files you actually care about:
 Open both in [QGIS](https://qgis.org/) (free) or any GeoJSON-friendly map viewer. Both
 are plain WGS84 lon/lat — no reprojection needed.
 
-<!-- IMAGE PLACEHOLDER: map-example
-     A real screenshot of your own QGIS project after loading scout_candidates.geojson
-     (filtered to tier == "ranked") over a basemap (OpenStreetMap works fine as a QGIS
-     XYZ layer). Color points by species, size or color by scout_score. This is the
-     single most useful image for a newcomer to see -- it's the actual payoff.
-     Save as docs/images/map-example.png:
-     ![Example ranked candidates on a map](docs/images/map-example.png)
--->
+![Example ranked candidates on a map](docs/images/map-example.png)
 
 Full field-by-field documentation of every output file (what each column means, real
 example rows, suggested QGIS symbology) lives in
@@ -229,13 +213,7 @@ a mediocre day, not a good one.
 Milk caps, russulas, and other edible-but-lower-value species aren't scored here — the
 model is deliberately narrow rather than trying to cover everything at once.
 
-<!-- IMAGE PLACEHOLDER: species-grid
-     A 5-photo grid, one real photo per target species (chanterelle, kitsemampel, aspen
-     bolete, birch bolete, porcini), captioned with the Estonian name. Good source:
-     your own foraging photos, or credited stock/CC-licensed mushroom photography.
-     Save as docs/images/species-grid.png:
-     ![The five target species](docs/images/species-grid.png)
--->
+![The five target species](docs/images/species-grid.png)
 
 ---
 

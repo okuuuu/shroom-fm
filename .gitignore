@@ -231,7 +231,10 @@ data/roads.geojson
 data/barriers.geojson
 data/scout_candidates.geojson
 data/radar_cache/
+data/radar_cache_kaia_archive_2026_08_21
 data/weather_eraldis.geojson
 data/forest_blocks.geojson
 data/macroclusters.geojson
 data/macrocluster_state.geojson
+data/scout_candidates.qml
+data/macrocluster_state.qml

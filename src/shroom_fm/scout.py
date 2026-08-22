@@ -74,7 +74,20 @@ def suppress_nearby_candidates(
     suppressed_by_id (the retaining candidate's f"{id_a}_{id_b}", same convention as
     rollup_daily_state's today_top_target_id_{species}), suppression_distance_m (real
     centroid distance to the suppressor, not the threshold), and pre_suppression_rank
-    (1-based position in scored_gdf's own sorted order, before any suppression)."""
+    (1-based position in scored_gdf's own sorted order, before any suppression).
+
+    Implementation note: candidates are looked up via a uniform spatial grid keyed on
+    min_separation_m, not a linear scan of the full retained set. This is exact, not
+    an approximation: with grid cells exactly min_separation_m wide, any two points in
+    non-adjacent cells (grid index differing by >=2 on either axis) are provably at
+    least min_separation_m apart, so only a candidate's 3x3 cell neighborhood can ever
+    contain a retained point within min_separation_m — every point outside that
+    neighborhood is guaranteed too far to matter, and every point inside it is checked
+    with a real, exact centroid.distance() call, same as before. Real-scale profiling
+    (real macrocluster buckets up to ~49,000 ecotones) found the previous full-scan
+    version spending >99% of its time in >100 million redundant distance() calls for
+    just 5 buckets; this makes the per-candidate cost roughly constant instead of
+    growing with the retained-set size."""
     if len(scored_gdf) == 0:
         empty = scored_gdf.copy()
         empty["suppressed_by_id"] = pd.Series(dtype=object)
@@ -83,18 +96,25 @@ def suppress_nearby_candidates(
         return scored_gdf.copy(), empty
 
     centroids = scored_gdf.geometry.centroid
+    cell_size = min_separation_m
+    # grid[(cell_x, cell_y)] -> list of (idx, centroid) for RETAINED candidates whose
+    # centroid falls in that cell.
+    grid: dict[tuple[int, int], list] = {}
     retained_idx: list = []
-    retained_centroids: list = []
     suppressed_records = []
 
     for position, (idx, centroid) in enumerate(zip(scored_gdf.index, centroids), start=1):
+        cell_x = int(centroid.x // cell_size)
+        cell_y = int(centroid.y // cell_size)
         nearest_distance = None
         nearest_retained_idx = None
-        for r_idx, r_centroid in zip(retained_idx, retained_centroids):
-            d = centroid.distance(r_centroid)
-            if nearest_distance is None or d < nearest_distance:
-                nearest_distance = d
-                nearest_retained_idx = r_idx
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for r_idx, r_centroid in grid.get((cell_x + dx, cell_y + dy), ()):
+                    d = centroid.distance(r_centroid)
+                    if nearest_distance is None or d < nearest_distance:
+                        nearest_distance = d
+                        nearest_retained_idx = r_idx
         if nearest_distance is not None and nearest_distance < min_separation_m:
             retaining_row = scored_gdf.loc[nearest_retained_idx]
             suppressed_records.append(
@@ -107,7 +127,7 @@ def suppress_nearby_candidates(
             )
         else:
             retained_idx.append(idx)
-            retained_centroids.append(centroid)
+            grid.setdefault((cell_x, cell_y), []).append((idx, centroid))
 
     retained = scored_gdf.loc[retained_idx].copy()
 

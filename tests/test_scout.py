@@ -1,4 +1,7 @@
+import random
+
 import geopandas as gpd
+import pandas as pd
 import pytest
 from shapely.geometry import Point
 
@@ -435,3 +438,102 @@ def test_suppress_nearby_candidates_handles_empty_input():
     assert len(retained) == 0
     assert len(suppressed) == 0
     assert "suppressed_by_id" in suppressed.columns
+
+
+def _naive_suppress_nearby_candidates(scored_gdf, min_separation_m):
+    """Reference implementation: the exact O(n*k) linear-scan algorithm
+    suppress_nearby_candidates used before it was optimized to a spatial-grid lookup.
+    Kept ONLY in this test file (never imported by production code) as a brute-force
+    oracle to prove the optimized implementation produces byte-for-byte identical
+    output on a large, randomized, realistic-density input -- the small hand-picked
+    tests above exercise correctness on simple cases, this one exercises it at a scale
+    close to what real macrocluster buckets look like."""
+    if len(scored_gdf) == 0:
+        empty = scored_gdf.copy()
+        empty["suppressed_by_id"] = pd.Series(dtype=object)
+        empty["suppression_distance_m"] = pd.Series(dtype=float)
+        empty["pre_suppression_rank"] = pd.Series(dtype="Int64")
+        return scored_gdf.copy(), empty
+
+    centroids = scored_gdf.geometry.centroid
+    retained_idx = []
+    retained_centroids = []
+    suppressed_records = []
+
+    for position, (idx, centroid) in enumerate(zip(scored_gdf.index, centroids), start=1):
+        nearest_distance = None
+        nearest_retained_idx = None
+        for r_idx, r_centroid in zip(retained_idx, retained_centroids):
+            d = centroid.distance(r_centroid)
+            if nearest_distance is None or d < nearest_distance:
+                nearest_distance = d
+                nearest_retained_idx = r_idx
+        if nearest_distance is not None and nearest_distance < min_separation_m:
+            retaining_row = scored_gdf.loc[nearest_retained_idx]
+            suppressed_records.append(
+                {
+                    "index": idx,
+                    "suppressed_by_id": f"{retaining_row['id_a']}_{retaining_row['id_b']}",
+                    "suppression_distance_m": nearest_distance,
+                    "pre_suppression_rank": position,
+                }
+            )
+        else:
+            retained_idx.append(idx)
+            retained_centroids.append(centroid)
+
+    retained = scored_gdf.loc[retained_idx].copy()
+    if suppressed_records:
+        suppressed_meta = pd.DataFrame(suppressed_records).set_index("index")
+        suppressed = scored_gdf.loc[suppressed_meta.index].copy()
+        suppressed["suppressed_by_id"] = suppressed_meta["suppressed_by_id"]
+        suppressed["suppression_distance_m"] = suppressed_meta["suppression_distance_m"]
+        suppressed["pre_suppression_rank"] = suppressed_meta["pre_suppression_rank"]
+    else:
+        suppressed = scored_gdf.iloc[0:0].copy()
+        suppressed["suppressed_by_id"] = pd.Series(dtype=object)
+        suppressed["suppression_distance_m"] = pd.Series(dtype=float)
+        suppressed["pre_suppression_rank"] = pd.Series(dtype="Int64")
+    return retained, suppressed
+
+
+def test_suppress_nearby_candidates_matches_naive_reference_at_realistic_scale():
+    # 400 candidates scattered over a ~6km x 6km area (density chosen so a real
+    # fraction of pairs fall within MIN_SCOUT_SEPARATION_M=400m of each other, forcing
+    # real suppression decisions across many grid cells and cell boundaries -- not just
+    # the handful of hand-picked points the other tests use).
+    rng = random.Random(20260822)
+    n = 400
+    xs = [rng.uniform(500_000, 506_000) for _ in range(n)]
+    ys = [rng.uniform(6_500_000, 6_506_000) for _ in range(n)]
+    scores = [rng.uniform(0.0, 1.0) for _ in range(n)]
+
+    scored_gdf = gpd.GeoDataFrame(
+        {
+            "id_a": list(range(1, n + 1)),
+            "id_b": list(range(1001, 1001 + n)),
+            "scout_score": scores,
+        },
+        geometry=[Point(x, y) for x, y in zip(xs, ys)],
+        crs="EPSG:3301",
+    ).sort_values("scout_score", ascending=False)
+
+    fast_retained, fast_suppressed = suppress_nearby_candidates(scored_gdf, min_separation_m=400.0)
+    naive_retained, naive_suppressed = _naive_suppress_nearby_candidates(
+        scored_gdf, min_separation_m=400.0
+    )
+
+    assert sorted(fast_retained.index) == sorted(naive_retained.index)
+    assert sorted(fast_suppressed.index) == sorted(naive_suppressed.index)
+    # Real suppression must actually be happening in this scenario -- if this fires 0,
+    # the density/area parameters above stopped exercising the interesting case.
+    assert len(fast_suppressed) > 0
+
+    fast_by_idx = fast_suppressed.set_index(fast_suppressed.index)
+    naive_by_idx = naive_suppressed.set_index(naive_suppressed.index)
+    for idx in fast_by_idx.index:
+        assert fast_by_idx.loc[idx, "suppressed_by_id"] == naive_by_idx.loc[idx, "suppressed_by_id"]
+        assert fast_by_idx.loc[idx, "suppression_distance_m"] == pytest.approx(
+            naive_by_idx.loc[idx, "suppression_distance_m"]
+        )
+        assert fast_by_idx.loc[idx, "pre_suppression_rank"] == naive_by_idx.loc[idx, "pre_suppression_rank"]
